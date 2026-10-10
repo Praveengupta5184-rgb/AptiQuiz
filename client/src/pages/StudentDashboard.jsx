@@ -7,7 +7,9 @@ function SidebarLayout({ name, navigate, children }) {
     const navItems = [
         { path: '/student', label: 'Overview', icon: '🏠' },
         { path: '/student/join', label: 'Join Test', icon: '▶️' },
-        { path: '/student/results', label: 'My Results', icon: '🏆' }
+        { path: '/student/results', label: 'My Results', icon: '🏆' },
+        { path: '/student/daily', label: 'Daily Challenge', icon: '📅' },
+        { path: '/student/leagues', label: 'College Leagues', icon: '🏛️' }
     ];
 
     const handleLogout = () => {
@@ -160,23 +162,29 @@ function StudentViews() {
                                     {new Date(r.created_at).toLocaleString()}
                                 </p>
                             </div>
-                            <div style={{ display: 'flex', gap: '2rem', textAlign: 'center' }}>
+                            <div style={{ display: 'flex', gap: '2rem', textAlign: 'center', flexWrap: 'wrap' }}>
                                 <div>
                                     <div style={{ fontSize: '0.8rem', color: '#9ca3af', textTransform: 'uppercase' }}>Rank</div>
-                                    <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: r.rank <= 3 ? '#fbbf24' : 'white' }}>
-                                        #{r.rank}
+                                    <div style={{ fontSize: '1.2rem', fontWeight: 'bold', color: r.rank <= 3 ? '#fbbf24' : 'white' }}>
+                                        #{r.rank} / {r.total_participants}
                                     </div>
                                 </div>
                                 <div>
                                     <div style={{ fontSize: '0.8rem', color: '#9ca3af', textTransform: 'uppercase' }}>Score</div>
-                                    <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#10b981' }}>
+                                    <div style={{ fontSize: '1.2rem', fontWeight: 'bold', color: '#10b981' }}>
                                         {r.total_score}
                                     </div>
                                 </div>
                                 <div>
                                     <div style={{ fontSize: '0.8rem', color: '#9ca3af', textTransform: 'uppercase' }}>Accuracy</div>
-                                    <div style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+                                    <div style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>
                                         {Number(r.accuracy_percent)}%
+                                    </div>
+                                </div>
+                                <div>
+                                    <div style={{ fontSize: '0.8rem', color: '#9ca3af', textTransform: 'uppercase' }}>Stats</div>
+                                    <div style={{ fontSize: '1.1rem', color: '#cbd5e1' }}>
+                                        ✅ {r.correct} ❌ {r.attempted - r.correct} ➖ {r.total_questions - r.attempted}
                                     </div>
                                 </div>
                             </div>
@@ -213,7 +221,8 @@ function StudentResultDetails() {
     if (error) return <div style={{ color: '#fca5a5' }}>Error: {error}</div>;
     if (!result) return <div style={{ color: '#9ca3af' }}>Result not found</div>;
 
-    const { test_title, test_description, created_at, total_score, rank, accuracy_percent, attempted, correct, avg_response_time_ms, total_questions } = result;
+    const { test_title, test_description, created_at, total_score, rank, accuracy_percent, attempted, correct, avg_response_time_ms, total_questions, stats, leaderboard, room_code } = result;
+    const myName = localStorage.getItem('studentName');
 
     return (
         <div>
@@ -265,6 +274,195 @@ function StudentResultDetails() {
                         )}
                     </div>
                 </div>
+
+                {stats && (
+                    <div style={{ borderTop: '1px solid #334155', paddingTop: '2rem', marginTop: '2rem' }}>
+                        <h3 style={{ color: 'white', margin: '0 0 1rem 0' }}>Class Comparison</h3>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+                            <div style={{ background: '#0f172a', padding: '1.5rem', borderRadius: '8px' }}>
+                                <div style={{ color: '#9ca3af', fontSize: '0.9rem', textTransform: 'uppercase' }}>Highest Score</div>
+                                <div style={{ color: '#fbbf24', fontSize: '1.8rem', fontWeight: 'bold' }}>{stats.highestScore}</div>
+                            </div>
+                            <div style={{ background: '#0f172a', padding: '1.5rem', borderRadius: '8px' }}>
+                                <div style={{ color: '#9ca3af', fontSize: '0.9rem', textTransform: 'uppercase' }}>Class Average</div>
+                                <div style={{ color: '#3b82f6', fontSize: '1.8rem', fontWeight: 'bold' }}>{stats.avgScore}</div>
+                            </div>
+                            <div style={{ background: '#0f172a', padding: '1.5rem', borderRadius: '8px' }}>
+                                <div style={{ color: '#9ca3af', fontSize: '0.9rem', textTransform: 'uppercase' }}>Difference from Avg</div>
+                                <div style={{ color: stats.diffFromAvg > 0 ? '#10b981' : (stats.diffFromAvg < 0 ? '#ef4444' : 'white'), fontSize: '1.8rem', fontWeight: 'bold' }}>
+                                    {stats.diffFromAvg > 0 ? '+' : ''}{stats.diffFromAvg}
+                                </div>
+                            </div>
+                            <div style={{ background: '#0f172a', padding: '1.5rem', borderRadius: '8px' }}>
+                                <div style={{ color: '#9ca3af', fontSize: '0.9rem', textTransform: 'uppercase' }}>Total Participants</div>
+                                <div style={{ color: 'white', fontSize: '1.8rem', fontWeight: 'bold' }}>{stats.totalParticipants}</div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+                
+                {leaderboard && leaderboard.length > 0 && (
+                    <div style={{ borderTop: '1px solid #334155', paddingTop: '2rem', marginTop: '2rem' }}>
+                        <h3 style={{ color: 'white', margin: '0 0 1rem 0' }}>Room Leaderboard (Room: {room_code})</h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                            {leaderboard.map((p, i) => (
+                                <div key={i} style={{
+                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                    padding: '1rem', background: p.display_name === myName ? '#1e293b' : '#0f172a',
+                                    border: p.display_name === myName ? '1px solid #3b82f6' : '1px solid transparent',
+                                    borderRadius: '8px'
+                                }}>
+                                    <div>
+                                        <strong style={{ color: i === 0 ? '#fbbf24' : i === 1 ? '#94a3b8' : i === 2 ? '#c2775b' : 'white', marginRight: '1rem', fontSize: '1.1rem' }}>
+                                            #{p.rank}
+                                        </strong>
+                                        <span style={{ fontSize: '1.1rem', color: p.display_name === myName ? '#3b82f6' : 'white', fontWeight: p.display_name === myName ? 'bold' : 'normal' }}>
+                                            {p.display_name} {p.display_name === myName ? '(You)' : ''}
+                                        </span>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '2rem', textAlign: 'right' }}>
+                                        <div>
+                                            <span style={{ color: '#9ca3af', fontSize: '0.8rem', marginRight: '0.5rem' }}>SCORE</span>
+                                            <strong style={{ color: '#10b981', fontSize: '1.1rem' }}>{p.total_score}</strong>
+                                        </div>
+                                        <div>
+                                            <span style={{ color: '#9ca3af', fontSize: '0.8rem', marginRight: '0.5rem' }}>ACCURACY</span>
+                                            <strong style={{ color: 'white', fontSize: '1.1rem' }}>{Number(p.accuracy_percent)}%</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+function StudentDaily() {
+    const [challenge, setChallenge] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [answers, setAnswers] = useState({});
+    const [submitted, setSubmitted] = useState(false);
+    const [result, setResult] = useState(null);
+    const [leaderboard, setLeaderboard] = useState([]);
+    
+    useEffect(() => {
+        api.getDailyChallenge()
+            .then(data => { setChallenge(data); setLoading(false); })
+            .catch(err => { setError(err.message); setLoading(false); });
+    }, []);
+
+    const fetchLeaderboard = (date) => {
+        api.getDailyLeaderboard(date).then(data => setLeaderboard(data.leaderboard || [])).catch(() => {});
+    };
+
+    const handleSubmit = async () => {
+        try {
+            const playerIdentifier = localStorage.getItem('studentName') || 'Unknown';
+            const res = await api.submitDailyChallenge({ challengeId: challenge.id, playerIdentifier, answers });
+            setResult(res);
+            setSubmitted(true);
+            fetchLeaderboard(challenge.date);
+        } catch (e) {
+            alert('Failed to submit: ' + e.message);
+        }
+    };
+
+    if (loading) return <div style={{ color: '#9ca3af' }}>Loading daily challenge...</div>;
+    if (error) return <div style={{ color: '#fca5a5' }}>Error: {error}</div>;
+    if (!challenge) return null;
+
+    return (
+        <div>
+            <h2 style={{ color: 'white', margin: '0 0 0.5rem 0' }}>Daily Challenge</h2>
+            <p style={{ color: '#9ca3af', marginBottom: '2rem' }}>Date: {challenge.date}</p>
+            
+            {submitted && result ? (
+                <div style={{ background: '#1e293b', padding: '2rem', borderRadius: '12px', marginBottom: '2rem' }}>
+                    <h3 style={{ color: 'white', marginTop: 0 }}>You scored {result.score} points!</h3>
+                    <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                        {challenge.questions.map((q, idx) => {
+                            const res = result.results[q.id];
+                            return (
+                                <div key={q.id} style={{ background: '#0f172a', padding: '1rem', borderRadius: '8px', borderLeft: `4px solid ${res.correct ? '#10b981' : '#ef4444'}` }}>
+                                    <strong>Q{idx+1}: {q.text}</strong>
+                                    <div style={{ marginTop: '0.5rem', color: res.correct ? '#10b981' : '#ef4444' }}>
+                                        {res.correct ? '✅ Correct' : `❌ Incorrect (Correct was option ${['A','B','C','D','E'][res.correctIndex]})`}
+                                    </div>
+                                    {res.explanation && <div style={{ marginTop: '0.5rem', color: '#9ca3af', fontSize: '0.9rem' }}>{res.explanation}</div>}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+                    {challenge.questions.map((q, idx) => (
+                        <div key={q.id} style={{ background: '#1e293b', padding: '1.5rem', borderRadius: '8px' }}>
+                            <h3 style={{ margin: '0 0 1rem 0', color: 'white', fontSize: '1.1rem' }}>{idx+1}. {q.text}</h3>
+                            <div style={{ display: 'grid', gap: '0.5rem' }}>
+                                {q.options.map((opt, oIdx) => (
+                                    <label key={oIdx} style={{
+                                        display: 'flex', alignItems: 'center', padding: '0.75rem 1rem', background: answers[q.id] === oIdx ? '#3b82f640' : '#334155',
+                                        borderRadius: '6px', cursor: 'pointer', border: `1px solid ${answers[q.id] === oIdx ? '#3b82f6' : 'transparent'}`
+                                    }}>
+                                        <input type="radio" name={`q_${q.id}`} value={oIdx} checked={answers[q.id] === oIdx} onChange={() => setAnswers({...answers, [q.id]: oIdx})} style={{ marginRight: '1rem' }} />
+                                        <span>{opt}</span>
+                                    </label>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                    <button onClick={handleSubmit} disabled={Object.keys(answers).length < challenge.questions.length} style={{
+                        padding: '1rem', background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', fontSize: '1.2rem', fontWeight: 'bold', cursor: Object.keys(answers).length < challenge.questions.length ? 'not-allowed' : 'pointer', opacity: Object.keys(answers).length < challenge.questions.length ? 0.5 : 1
+                    }}>
+                        Submit Challenge
+                    </button>
+                </div>
+            )}
+            
+            {submitted && (
+                <div style={{ marginTop: '3rem' }}>
+                    <h3 style={{ color: 'white' }}>Today's Leaderboard</h3>
+                    <div style={{ background: '#1e293b', borderRadius: '8px', padding: '1rem' }}>
+                        {leaderboard.length === 0 ? <div style={{ color: '#9ca3af' }}>No attempts yet...</div> : leaderboard.map((l, i) => (
+                            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.75rem', borderBottom: '1px solid #334155' }}>
+                                <span>{i+1}. {l.player_identifier}</span>
+                                <strong style={{ color: '#10b981' }}>{l.score} pts</strong>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function StudentLeagues() {
+    const [leagues, setLeagues] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        api.getLeagues()
+            .then(data => { setLeagues(data.leagues || []); setLoading(false); })
+            .catch(() => setLoading(false));
+    }, []);
+
+    if (loading) return <div style={{ color: '#9ca3af' }}>Loading leagues...</div>;
+
+    return (
+        <div>
+            <h2 style={{ color: 'white', margin: '0 0 2rem 0' }}>College Leagues</h2>
+            <div style={{ background: '#1e293b', borderRadius: '8px', padding: '1rem' }}>
+                {leagues.length === 0 ? <p style={{ color: '#9ca3af' }}>No college league scores yet.</p> : leagues.map((l, i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '1rem', borderBottom: '1px solid #334155' }}>
+                        <span style={{ fontSize: '1.2rem' }}>{i+1}. <strong>{l.college_name}</strong></span>
+                        <strong style={{ fontSize: '1.2rem', color: '#fbbf24' }}>{l.score} pts</strong>
+                    </div>
+                ))}
             </div>
         </div>
     );
@@ -289,6 +487,8 @@ export default function StudentDashboard() {
                 <Route path="/join" element={<StudentViews />} />
                 <Route path="/results" element={<StudentViews />} />
                 <Route path="/results/:id" element={<StudentResultDetails />} />
+                <Route path="/daily" element={<StudentDaily />} />
+                <Route path="/leagues" element={<StudentLeagues />} />
             </Routes>
         </SidebarLayout>
     );

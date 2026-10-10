@@ -18,10 +18,12 @@ function getStudentToken() {
 
 async function apiFetch(path, options = {}) {
     const token = getToken();
-    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    const headers = { ...options.headers };
+    if (!options._isFormData) headers['Content-Type'] = 'application/json';
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    const res = await fetch(`${BASE}${path}`, { ...options, headers });
+    const { _isFormData, ...fetchOptions } = options;
+    const res = await fetch(`${BASE}${path}`, { ...fetchOptions, headers });
     const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
@@ -53,13 +55,26 @@ export const api = {
     // Tests
     getTests: () => apiFetch('/api/tests'),
     getTeacherDashboard: () => apiFetch('/api/teacher/dashboard'),
+    getTeacherHistory: () => apiFetch('/api/teacher/history'),
+    getTeacherRoomResults: (roomId) => apiFetch(`/api/teacher/results/${roomId}`),
     getTest: (id) => apiFetch(`/api/tests/${id}`),
     createTest: (body) => apiFetch('/api/tests', { method: 'POST', body: JSON.stringify(body) }),
+    parsePdf: (formData) => apiFetch('/api/tests/parse-pdf', { method: 'POST', body: formData, _isFormData: true }),
     getTestAnalytics: (id) => apiFetch(`/api/tests/${id}/analytics`),
+    getQuestionAnalytics: (id) => apiFetch(`/api/tests/${id}/question-analytics`),
 
     // Rooms
     createRoom: (body) => apiFetch('/api/rooms', { method: 'POST', body: JSON.stringify(body) }),
     getRoomResults: (code) => apiFetch(`/api/rooms/${code}/results`),
+
+    // Daily Challenges
+    getDailyChallenge: () => studentApiFetch('/api/daily'),
+    submitDailyChallenge: (body) => studentApiFetch('/api/daily/submit', { method: 'POST', body: JSON.stringify(body) }),
+    getDailyLeaderboard: (date) => studentApiFetch(`/api/daily/leaderboard/${date}`),
+    
+    // College Leagues
+    getColleges: () => studentApiFetch('/api/colleges'),
+    getLeagues: () => studentApiFetch('/api/leagues'),
 };
 
 export const SOCKET_URL = BASE || window.location.origin;

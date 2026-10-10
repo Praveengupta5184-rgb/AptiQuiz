@@ -101,6 +101,11 @@ body {
   transform: translateY(-2px);
 }
 
+.option-btn:focus-visible {
+  outline: 3px solid #60a5fa;
+  outline-offset: 2px;
+}
+
 .powerups-bar {
   display: flex;
   align-items: center;

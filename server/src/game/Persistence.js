@@ -74,6 +74,17 @@ async function persistGameResults(room, dbPool) {
                 if (!topicStats[topic]) topicStats[topic] = { attempted: 0, correct: 0 };
                 topicStats[topic].attempted++;
                 if (a.isCorrect) topicStats[topic].correct++;
+                
+                // Persist actual answer record
+                if (q.game_question_id) {
+                    await client.query(
+                        `INSERT INTO answers 
+                        (room_id, player_id, game_question_id, chosen_option_index, is_correct, points_awarded, receipt_timestamp, compensated_elapsed_ms)
+                        VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
+                        ON CONFLICT (player_id, game_question_id) DO NOTHING`,
+                        [room.roomId, playerId, q.game_question_id, a.originalOptionChosen || a.shuffledOptionChosen, a.isCorrect, a.points || 0, a.elapsed || 0]
+                    );
+                }
             }
 
             // Update player score in room_players
@@ -103,6 +114,34 @@ async function persistGameResults(room, dbPool) {
             );
 
             rank++;
+        }
+
+        // Update college league score if the room belongs to a college
+        const roomDbRes = await client.query('SELECT college_id FROM rooms WHERE id = $1', [room.roomId]);
+        const collegeId = roomDbRes.rows[0]?.college_id;
+        if (collegeId) {
+            let totalRoomScore = 0;
+            for (const p of room.players.values()) {
+                totalRoomScore += p.score || 0;
+            }
+            if (totalRoomScore > 0) {
+                // Ensure there is at least one active season
+                let seasonRes = await client.query('SELECT id FROM seasons ORDER BY start_date DESC LIMIT 1');
+                if (seasonRes.rows.length === 0) {
+                    seasonRes = await client.query(
+                        "INSERT INTO seasons (name, start_date, end_date) VALUES ('Season 1', NOW(), NOW() + INTERVAL '1 year') RETURNING id"
+                    );
+                }
+                const seasonId = seasonRes.rows[0].id;
+                
+                await client.query(
+                    `INSERT INTO league_scores (college_id, season_id, score) 
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT (college_id, season_id, topic) WHERE topic IS NULL 
+                     DO UPDATE SET score = league_scores.score + EXCLUDED.score, updated_at = NOW()`,
+                    [collegeId, seasonId, totalRoomScore]
+                );
+            }
         }
 
         await client.query('COMMIT');

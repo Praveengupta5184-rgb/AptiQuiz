@@ -39,16 +39,20 @@ function calculateScore(
     currentStreak = 0, 
     difficulty = 'medium',
     roundTripLatencyMs = 0,
-    hasDoublePoints = false
+    hasDoublePoints = false,
+    hasTimeFreeze = false
 ) {
     // 1. Compensate for latency (subtract half RTT, capped at MAX)
     const compensation = Math.min(roundTripLatencyMs / 2, SCORING_CONFIG.MAX_LATENCY_COMPENSATION_MS);
     
     // 2. Calculate elapsed time
-    const rawElapsedMs = serverReceiptTimeMs - serverStartTimeMs;
-    let compensatedElapsedMs = rawElapsedMs - compensation;
-    if (compensatedElapsedMs < 0) compensatedElapsedMs = 0;
-    compensatedElapsedMs = Math.round(compensatedElapsedMs);
+    let compensatedElapsedMs = 0;
+    if (!hasTimeFreeze) {
+        const rawElapsedMs = serverReceiptTimeMs - serverStartTimeMs;
+        compensatedElapsedMs = rawElapsedMs - compensation;
+        if (compensatedElapsedMs < 0) compensatedElapsedMs = 0;
+        compensatedElapsedMs = Math.round(compensatedElapsedMs);
+    }
 
     // 3. Check if answer is too late (beyond deadline + network grace)
     const deadlineMs = timeLimitMs + SCORING_CONFIG.NETWORK_GRACE_MS;

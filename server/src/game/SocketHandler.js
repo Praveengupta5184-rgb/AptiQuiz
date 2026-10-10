@@ -36,7 +36,7 @@ const joinSchema = z.object({
     code: z.string().length(5).toUpperCase(),
     displayName: z.string().min(1).max(50).trim(),
     sessionTokenHash: z.string().min(1).max(1024),
-    role: z.enum(['player', 'host']).optional(),
+    role: z.enum(['player', 'host', 'spectator']).optional(),
     studentId: z.number().int().positive().optional(),
 });
 
@@ -144,6 +144,21 @@ class SocketHandler {
                     if (callback) callback({ success: true, reconnected: true });
                     return;
                 }
+                
+                if (role === 'spectator') {
+                    socket.join(code);
+                    this.socketToRoom.set(socket.id, code);
+                    // Emit full current state to spectator
+                    const state = {
+                        state: room.state,
+                        settings: room.settings,
+                        question: room.state === 'QUESTION_ACTIVE' || room.state === 'REVEAL' ? room.getQuestionState() : null,
+                        leaderboard: room.getLeaderboard(),
+                    };
+                    socket.emit('reconnect_state', state); // We can reuse reconnect_state to load the spectator view
+                    if (callback) callback({ success: true });
+                    return;
+                }
 
                 // New player joining
                 if (room.state !== 'LOBBY') {
@@ -237,6 +252,26 @@ class SocketHandler {
             }
         });
 
+        // ── Use Powerup ──
+        socket.on('use_powerup', (data, callback) => {
+            try {
+                const { powerupType } = data;
+                if (!powerupType) throw new Error('No powerup type specified');
+
+                const code = this.socketToRoom.get(socket.id);
+                if (!code) throw new Error('Not in a room');
+                const room = this.rooms.get(code);
+                if (!room) throw new Error('Room not found');
+
+                const result = room.usePowerup(socket.id, powerupType);
+                if (callback) callback(result);
+            } catch (err) {
+                const msg = err.message || 'Powerup failed';
+                if (callback) callback({ success: false, error: msg });
+                else socket.emit('error', { message: msg });
+            }
+        });
+
         // ── Disconnect ──
         socket.on('disconnect', () => {
             const code = this.socketToRoom.get(socket.id);
@@ -310,9 +345,35 @@ class SocketHandler {
         );
         const roomId = insertRes.rows[0].id;
 
+        // Persist game_questions mappings
+        for (let i = 0; i < questions.length; i++) {
+            const q = questions[i];
+            const gqRes = await pool.query(
+                `INSERT INTO game_questions (room_id, question_id, order_index) VALUES ($1, $2, $3) RETURNING id`,
+                [roomId, q.id, i]
+            );
+            q.game_question_id = gqRes.rows[0].id;
+        }
+        
+        // Initialize teams if Team Mode is enabled
+        let teams = [];
+        if (settings?.teamMode) {
+            const teamCount = settings.teamCount || 2;
+            const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+            for (let i = 0; i < teamCount; i++) {
+                const teamName = `Team ${alphabet[i % alphabet.length]}`;
+                const teamRes = await pool.query(
+                    `INSERT INTO teams (room_id, name, score) VALUES ($1, $2, 0) RETURNING *`,
+                    [roomId, teamName]
+                );
+                teams.push(teamRes.rows[0]);
+            }
+        }
+
         const room = new GameRoom(
             roomId, code, settings, hostTokenHash, questions,
-            (finishedRoom) => this.handleGameFinished(finishedRoom)
+            (finishedRoom) => this.handleGameFinished(finishedRoom),
+            teams
         );
 
         this.rooms.set(code, room);

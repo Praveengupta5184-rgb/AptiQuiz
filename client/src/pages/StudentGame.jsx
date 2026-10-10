@@ -20,6 +20,7 @@ export default function StudentGame() {
     const [timeLeft, setTimeLeft] = useState(null);
     const [myScore, setMyScore] = useState(0);
     const [leaderboard, setLeaderboard] = useState([]);
+    const [removedOptions, setRemovedOptions] = useState([]);
 
     const token = localStorage.getItem('studentToken');
     const name = localStorage.getItem('studentName');
@@ -29,7 +30,9 @@ export default function StudentGame() {
     useEffect(() => {
         if (!question || status !== 'question') return;
         const tick = () => {
-            const remaining = Math.max(0, question.deadlineMs - Date.now());
+            const elapsedSinceReceive = Date.now() - (question.localReceivedAt || Date.now());
+            const expectedServerNow = (question.serverNow || Date.now()) + elapsedSinceReceive;
+            const remaining = Math.max(0, question.deadlineMs - expectedServerNow);
             setTimeLeft(Math.ceil(remaining / 1000));
         };
         tick();
@@ -101,8 +104,9 @@ export default function StudentGame() {
             }
 
             if (state.state === 'QUESTION_ACTIVE' && state.question) {
-                setQuestion(state.question);
+                setQuestion({ ...state.question, localReceivedAt: Date.now() });
                 setSelectedOption(state.alreadyAnswered ? -1 : null); // -1 means answered
+                setRemovedOptions([]);
                 setStatus('question');
                 return;
             }
@@ -110,7 +114,7 @@ export default function StudentGame() {
             if (state.state === 'REVEAL' && state.reveal) {
                 setQuestion(state.question);
                 setRevealData(state.reveal);
-                setLeaderboard(state.reveal.leaderboard || []);
+                setLeaderboard(state.reveal.leaderboard?.players || []);
                 setStatus('reveal');
                 return;
             }
@@ -133,14 +137,16 @@ export default function StudentGame() {
                 const j = Math.floor(Math.random() * (i + 1));
                 [mappedOptions[i], mappedOptions[j]] = [mappedOptions[j], mappedOptions[i]];
             }
-            setQuestion({ ...q, shuffledOptions: mappedOptions });
+            setQuestion({ ...q, shuffledOptions: mappedOptions, localReceivedAt: Date.now() });
             setRevealData(null);
             setSelectedOption(null);
+            setRemovedOptions([]);
             setStatus('question');
         });
 
         // Live leaderboard during question
-        socket.on('score_update', (lb) => {
+        socket.on('score_update', (lbData) => {
+            const lb = lbData?.players || [];
             setLeaderboard(lb);
             // Update my score from leaderboard
             const me = lb.find(p => p.displayName === name);
@@ -150,17 +156,18 @@ export default function StudentGame() {
         // Reveal
         socket.on('reveal', (data) => {
             setRevealData(data);
-            setLeaderboard(data.leaderboard || []);
+            const lb = data.leaderboard?.players || [];
+            setLeaderboard(lb);
             setTimeLeft(0);
             setStatus('reveal');
-            const me = (data.leaderboard || []).find(p => p.displayName === name);
+            const me = lb.find(p => p.displayName === name);
             if (me) setMyScore(me.score);
         });
 
         // Finished
         socket.on('game_finished', (results) => {
             setFinalResults(results);
-            setLeaderboard(results.leaderboard || []);
+            setLeaderboard(results.leaderboard?.players || []);
             setStatus('finished');
         });
 
@@ -187,10 +194,9 @@ export default function StudentGame() {
         };
     }, [code, token, name, navigate]);
 
-    // ── Submit answer ─────────────────────────────────────────────────────────
-
     const submitAnswer = useCallback((idx) => {
         if (status !== 'question' || selectedOption !== null || !socketRef.current) return;
+        if (removedOptions.includes(idx)) return; // prevent clicking removed options
         setSelectedOption(idx);
         socketRef.current.emit('submit_answer', { optionIndex: idx }, (ack) => {
             if (!ack?.success) {
@@ -199,7 +205,33 @@ export default function StudentGame() {
                 setErrorMsg(ack?.error || 'Answer not accepted');
             }
         });
-    }, [status, selectedOption]);
+    }, [status, selectedOption, removedOptions]);
+
+    const usePowerup = useCallback((type) => {
+        if (status !== 'question' || selectedOption !== null || !socketRef.current) return;
+        if (!question?.powerups?.[type] || question.powerups[type] <= 0) return;
+        
+        socketRef.current.emit('use_powerup', { powerupType: type }, (ack) => {
+            if (ack?.success) {
+                if (type === 'fifty_fifty') {
+                    setRemovedOptions(ack.removedIndices || []);
+                }
+                // Update local question state to reflect powerup usage and active status
+                setQuestion(q => {
+                    if (!q) return q;
+                    const newPowerups = { ...q.powerups, [type]: q.powerups[type] - 1 };
+                    return {
+                        ...q,
+                        powerups: newPowerups,
+                        activeDoublePoints: type === 'double_points' ? true : q.activeDoublePoints,
+                        activeTimeFreeze: type === 'time_freeze' ? true : q.activeTimeFreeze,
+                    };
+                });
+            } else {
+                alert(ack?.error || 'Could not use powerup');
+            }
+        });
+    }, [status, selectedOption, question]);
 
     // Keyboard shortcut: 1-4 to select options
     useEffect(() => {
@@ -278,7 +310,8 @@ export default function StudentGame() {
     }
 
     if (status === 'finished') {
-        const myRank = (finalResults?.leaderboard || []).findIndex(p => p.displayName === name) + 1;
+        const lbPlayers = finalResults?.leaderboard?.players || [];
+        const myRank = lbPlayers.findIndex(p => p.displayName === name) + 1;
         return (
             <Screen>
                 <h2>🏁 Test Complete!</h2>
@@ -290,14 +323,14 @@ export default function StudentGame() {
                     <div style={{ fontSize: '3rem', fontWeight: 'bold', color: '#10b981' }}>{myScore}</div>
                     {myRank > 0 && (
                         <div style={{ marginTop: '0.5rem', color: '#fbbf24' }}>
-                            Rank #{myRank} of {finalResults.leaderboard.length}
+                            Rank #{myRank} of {lbPlayers.length}
                         </div>
                     )}
                 </div>
 
                 <div style={{ maxWidth: '500px', width: '100%' }}>
                     <h3 style={{ color: '#9ca3af', marginBottom: '0.75rem', textAlign: 'center' }}>Final Leaderboard</h3>
-                    {(finalResults?.leaderboard || []).map((p, i) => (
+                    {lbPlayers.map((p, i) => (
                         <div key={i} style={{
                             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                             padding: '0.6rem 1rem', borderRadius: '4px', marginBottom: '0.4rem',
@@ -367,10 +400,38 @@ export default function StudentGame() {
 
                             <h2 className="question-text">{question.text}</h2>
 
+                            {status === 'question' && question.powerups && (
+                                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
+                                    <button 
+                                        onClick={() => usePowerup('fifty_fifty')}
+                                        disabled={answered || question.powerups.fifty_fifty <= 0 || removedOptions.length > 0}
+                                        style={{ ...powerupBtn, opacity: (answered || question.powerups.fifty_fifty <= 0 || removedOptions.length > 0) ? 0.5 : 1 }}
+                                    >
+                                        ✂️ 50/50 ({question.powerups.fifty_fifty || 0})
+                                    </button>
+                                    <button 
+                                        onClick={() => usePowerup('double_points')}
+                                        disabled={answered || question.powerups.double_points <= 0 || question.activeDoublePoints}
+                                        style={{ ...powerupBtn, background: question.activeDoublePoints ? '#10b981' : undefined, opacity: (answered || question.powerups.double_points <= 0) && !question.activeDoublePoints ? 0.5 : 1 }}
+                                    >
+                                        🌟 2x Points ({question.powerups.double_points || 0})
+                                    </button>
+                                    <button 
+                                        onClick={() => usePowerup('time_freeze')}
+                                        disabled={answered || question.powerups.time_freeze <= 0 || question.activeTimeFreeze}
+                                        style={{ ...powerupBtn, background: question.activeTimeFreeze ? '#3b82f6' : undefined, opacity: (answered || question.powerups.time_freeze <= 0) && !question.activeTimeFreeze ? 0.5 : 1 }}
+                                    >
+                                        ❄️ Freeze ({question.powerups.time_freeze || 0})
+                                    </button>
+                                </div>
+                            )}
+
                             <div className="options-grid">
                                 {(question.shuffledOptions || question.options.map((opt, i) => ({ text: opt, originalIndex: i }))).map((optObj, idx) => {
                                     const originalIdx = optObj.originalIndex;
                                     let btnClass = 'option-btn';
+                                    const isRemoved = removedOptions.includes(originalIdx);
+                                    
                                     if (status === 'reveal' && revealData) {
                                         if (originalIdx === revealData.correctOptionIndex) btnClass += ' correct';
                                         else if (selectedOption === originalIdx) btnClass += ' wrong';
@@ -378,13 +439,13 @@ export default function StudentGame() {
                                         btnClass += ' selected';
                                     }
 
-                                    const isFaded = answered && selectedOption !== originalIdx && (status !== 'reveal' || originalIdx !== revealData?.correctOptionIndex);
+                                    const isFaded = isRemoved || (answered && selectedOption !== originalIdx && (status !== 'reveal' || originalIdx !== revealData?.correctOptionIndex));
 
                                     return (
                                         <button
                                             key={idx}
                                             onClick={() => submitAnswer(originalIdx)}
-                                            disabled={answered}
+                                            disabled={answered || isRemoved}
                                             className={`${btnClass} ${isFaded ? 'faded' : ''}`}
                                             aria-label={`Option ${LABELS[idx]}: ${optObj.text}`}
                                         >
@@ -468,3 +529,9 @@ function actionBtn(bg) {
         border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '1rem'
     };
 }
+
+const powerupBtn = {
+    padding: '0.5rem 1rem', background: '#334155', color: 'white', border: '1px solid #475569', 
+    borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.9rem',
+    display: 'flex', alignItems: 'center', gap: '0.5rem', transition: 'all 0.2s'
+};

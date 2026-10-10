@@ -53,13 +53,14 @@ function makeSeed(playerToken, questionIndex) {
 }
 
 class GameRoom {
-    constructor(roomId, code, settings, hostTokenHash, questions, onFinished) {
+    constructor(roomId, code, settings, hostTokenHash, questions, onFinished, teams = []) {
         this.roomId = roomId;          // DB primary key (null if not persisted)
         this.code = code;
-        this.settings = settings;      // { maxPlayers, advanceEarly, timePerQuestion? }
+        this.settings = settings;      // { maxPlayers, advanceEarly, timePerQuestion?, teamMode, teamSizeLimit, teamCount }
         this.hostTokenHash = hostTokenHash;
         this.questions = questions;    // Array of DB rows from the questions table
         this.onFinished = onFinished;
+        this.teams = teams;            // Array of team objects { id, name, score }
 
         this.state = 'LOBBY';          // LOBBY | QUESTION_ACTIVE | REVEAL | FINISHED
         this.players = new Map();      // sessionTokenHash → playerData
@@ -89,6 +90,31 @@ class GameRoom {
         this.socketToToken.set(socketId, sessionTokenHash);
 
         if (!this.players.has(sessionTokenHash)) {
+            // Assign to team fairly if team mode is enabled
+            if (this.settings.teamMode && this.teams && this.teams.length > 0 && !teamId) {
+                // Find team with least members
+                const teamCounts = new Map(this.teams.map(t => [t.id, 0]));
+                for (const p of this.players.values()) {
+                    if (p.teamId) {
+                        teamCounts.set(p.teamId, (teamCounts.get(p.teamId) || 0) + 1);
+                    }
+                }
+                let minTeamId = this.teams[0].id;
+                let minCount = Infinity;
+                for (const [tId, count] of teamCounts.entries()) {
+                    if (count < minCount) {
+                        minCount = count;
+                        minTeamId = tId;
+                    }
+                }
+                
+                if (minCount >= (this.settings.teamSizeLimit || 5)) {
+                    throw new Error('All teams are full.');
+                }
+                
+                teamId = minTeamId;
+            }
+
             this.players.set(sessionTokenHash, {
                 displayName,
                 teamId,
@@ -97,6 +123,8 @@ class GameRoom {
                 answers: [],          // { qIndex, shuffledOptionChosen, isCorrect, points, elapsed }
                 answeredCurrent: false,
                 activeDoublePoints: false,
+                activeTimeFreeze: false,
+                powerups: { fifty_fifty: 1, double_points: 1, time_freeze: 1 },
                 connected: true,
             });
         } else {
@@ -131,6 +159,51 @@ class GameRoom {
         if (this.currentQuestionIndex >= this.questions.length) {
             this.finishGame();
             return null;  // Signal: no more questions
+        }
+
+        // Feature F: Adaptive Difficulty
+        if (this.settings.adaptiveDifficulty && this.currentQuestionIndex > 0) {
+            let correctCount = 0;
+            let totalAnswered = 0;
+            
+            // Check performance on the PREVIOUS question
+            const prevQ = this.questions[this.currentQuestionIndex - 1];
+            for (const p of this.players.values()) {
+                const ans = p.answers.find(a => a.qIndex === this.currentQuestionIndex - 1);
+                if (ans) {
+                    totalAnswered++;
+                    if (ans.isCorrect) correctCount++;
+                }
+            }
+
+            if (totalAnswered > 0) {
+                const accuracy = correctCount / totalAnswered;
+                let targetDifficulty = null;
+                
+                // >70% accuracy -> Harder question
+                if (accuracy > 0.7) targetDifficulty = 'hard';
+                // <40% accuracy -> Easier question
+                else if (accuracy < 0.4) targetDifficulty = 'easy';
+                else targetDifficulty = 'medium';
+
+                // Find a matching question in the remaining pool
+                if (targetDifficulty) {
+                    let bestIdx = -1;
+                    for (let i = this.currentQuestionIndex; i < this.questions.length; i++) {
+                        if (this.questions[i].difficulty?.toLowerCase() === targetDifficulty) {
+                            bestIdx = i;
+                            break; // found an exact match
+                        }
+                    }
+                    if (bestIdx !== -1 && bestIdx !== this.currentQuestionIndex) {
+                        // Swap
+                        const temp = this.questions[this.currentQuestionIndex];
+                        this.questions[this.currentQuestionIndex] = this.questions[bestIdx];
+                        this.questions[bestIdx] = temp;
+                        console.log(`[Room ${this.code}] Adaptive Difficulty: accuracy ${(accuracy*100).toFixed(0)}%, swapped to ${targetDifficulty} question.`);
+                    }
+                }
+            }
         }
 
         this.state = 'QUESTION_ACTIVE';
@@ -197,6 +270,59 @@ class GameRoom {
         }, 5000);
     }
 
+    // ─── Power-ups ──────────────────────────────────────────────────────────
+
+    usePowerup(socketId, powerupType) {
+        if (this.state !== 'QUESTION_ACTIVE') throw new Error('Powerups can only be used during an active question');
+        
+        const token = this.socketToToken.get(socketId);
+        if (!token) throw new Error('Unknown player');
+        
+        const player = this.players.get(token);
+        if (!player) throw new Error('Unknown player');
+        
+        if (!player.powerups[powerupType] || player.powerups[powerupType] <= 0) {
+            throw new Error('You do not have any of this power-up left');
+        }
+        
+        if (player.answeredCurrent) {
+            throw new Error('You already answered this question');
+        }
+        
+        // Deduct the powerup
+        player.powerups[powerupType]--;
+        
+        if (powerupType === 'double_points') {
+            player.activeDoublePoints = true;
+            return { success: true, powerupType, message: 'Double Points activated!' };
+        } else if (powerupType === 'time_freeze') {
+            player.activeTimeFreeze = true;
+            return { success: true, powerupType, message: 'Time Freeze activated!' };
+        } else if (powerupType === 'fifty_fifty') {
+            // Find 2 incorrect options
+            const q = this.questions[this.currentQuestionIndex];
+            const shuffledOptions = this._getShuffledOptionsForPlayer(token, this.currentQuestionIndex);
+            
+            const incorrectIndices = [];
+            for (let i = 0; i < shuffledOptions.mapping.length; i++) {
+                if (shuffledOptions.mapping[i] !== q.correct_option_index) {
+                    incorrectIndices.push(i);
+                }
+            }
+            
+            // Randomly pick 2 to remove
+            const removedIndices = [];
+            while (removedIndices.length < 2 && incorrectIndices.length > 0) {
+                const idx = Math.floor(Math.random() * incorrectIndices.length);
+                removedIndices.push(incorrectIndices.splice(idx, 1)[0]);
+            }
+            
+            return { success: true, powerupType, removedIndices, message: '50/50 activated!' };
+        }
+        
+        throw new Error('Unknown powerup type');
+    }
+
     // ─── Answer submission ───────────────────────────────────────────────────
 
     /**
@@ -241,7 +367,8 @@ class GameRoom {
             player.streak,
             q.difficulty,
             medianPing,
-            player.activeDoublePoints
+            player.activeDoublePoints,
+            player.activeTimeFreeze
         );
 
         if (!result.isLate) {
@@ -356,10 +483,15 @@ class GameRoom {
         return {
             code: this.code,
             state: this.state,
-            settings: { maxPlayers: this.settings.maxPlayers || 50 },
+            settings: { 
+                maxPlayers: this.settings.maxPlayers || 50,
+                teamMode: !!this.settings.teamMode 
+            },
+            teams: this.teams || [],
             players: Array.from(this.players.values()).map(p => ({
                 displayName: p.displayName,
                 connected: p.connected,
+                teamId: p.teamId,
             })),
         };
     }
@@ -369,6 +501,7 @@ class GameRoom {
      */
     getQuestionStateForPlayer(sessionTokenHash) {
         const q = this.questions[this.currentQuestionIndex];
+        const player = this.players.get(sessionTokenHash);
         const shuffled = this._getShuffledOptionsForPlayer(sessionTokenHash, this.currentQuestionIndex);
         const timeLimitMs = ((q.time_limit || 0) * 1000) ||
             this.settings.timePerQuestion ||
@@ -382,7 +515,11 @@ class GameRoom {
             options: shuffled.options,      // shuffled for this player
             image_url: q.image_url || null,
             deadlineMs: this.questionDeadlineMs,
+            serverNow: Date.now(),
             timeLimitMs,
+            powerups: player ? player.powerups : {},
+            activeDoublePoints: player ? player.activeDoublePoints : false,
+            activeTimeFreeze: player ? player.activeTimeFreeze : false,
         };
     }
 
@@ -404,6 +541,7 @@ class GameRoom {
             options: typeof q.options === 'string' ? JSON.parse(q.options) : q.options,
             image_url: q.image_url || null,
             deadlineMs: this.questionDeadlineMs,
+            serverNow: Date.now(),
             timeLimitMs,
         };
     }
@@ -413,10 +551,20 @@ class GameRoom {
             displayName: p.displayName,
             score: p.score,
             streak: p.streak,
+            teamId: p.teamId
         }));
         // Primary: score descending. Tie-break: displayName ascending (deterministic).
         list.sort((a, b) => b.score - a.score || a.displayName.localeCompare(b.displayName));
-        return list;
+        
+        let teamLeaderboard = [];
+        if (this.settings.teamMode && this.teams) {
+            teamLeaderboard = this.teams.map(t => {
+                const teamScore = list.filter(p => p.teamId === t.id).reduce((sum, p) => sum + p.score, 0);
+                return { id: t.id, name: t.name, score: teamScore };
+            }).sort((a, b) => b.score - a.score);
+        }
+
+        return { players: list, teams: teamLeaderboard };
     }
 
     getFinalResults() {

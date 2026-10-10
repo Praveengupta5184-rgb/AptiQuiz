@@ -17,7 +17,18 @@ export default function HostLobby() {
     useEffect(() => {
         let cancelled = false;
 
-        api.createRoom({ questionSetId: testId, settings: { maxPlayers: 50, advanceEarly: true } })
+        const searchParams = new URLSearchParams(window.location.search);
+        const teamMode = searchParams.get('teamMode') === 'true';
+        const teamSizeLimit = parseInt(searchParams.get('teamSizeLimit') || '4', 10);
+        const teamCount = parseInt(searchParams.get('teamCount') || '2', 10);
+        const adaptiveDifficulty = searchParams.get('adaptiveDifficulty') === 'true';
+        const collegeId = searchParams.get('collegeId') ? parseInt(searchParams.get('collegeId'), 10) : null;
+
+        api.createRoom({ 
+            questionSetId: testId,
+            collegeId: collegeId,
+            settings: { maxPlayers: 50, advanceEarly: true, teamMode, teamSizeLimit, teamCount, adaptiveDifficulty } 
+        })
             .then(data => {
                 if (cancelled) return;
                 if (!data.success) throw new Error(data.error || 'Failed to create room');
@@ -126,9 +137,9 @@ export default function HostLobby() {
     // ── Finished state ──
     if (roomState.state === 'FINISHED') {
         const exportToCSV = () => {
-            if (!roomState.leaderboard) return;
-            const headers = ['Rank', 'Name', 'Score'];
-            const rows = roomState.leaderboard.map((p, i) => [i + 1, p.displayName, p.score]);
+            if (!roomState.leaderboard || !roomState.leaderboard.players) return;
+            const headers = ['Rank', 'Name', 'Score', 'Team ID'];
+            const rows = roomState.leaderboard.players.map((p, i) => [i + 1, p.displayName, p.score, p.teamId || '']);
             const csvContent = "data:text/csv;charset=utf-8," + [headers, ...rows].map(e => e.join(",")).join("\n");
             const encodedUri = encodeURI(csvContent);
             const link = document.createElement("a");
@@ -144,14 +155,25 @@ export default function HostLobby() {
                 <h2>🎉 Test Complete!</h2>
                 <div style={{ maxWidth: '600px', margin: '2rem auto' }}>
                     <h3 style={{ marginBottom: '1rem', color: '#9ca3af' }}>Final Leaderboard</h3>
-                    {roomState.leaderboard?.map((p, i) => (
+                    {roomState.settings?.teamMode && roomState.leaderboard?.teams && (
+                        <div style={{ marginBottom: '1.5rem' }}>
+                            <h4 style={{ color: '#fbbf24', margin: '0 0 0.5rem', textAlign: 'left' }}>Team Standings</h4>
+                            {roomState.leaderboard.teams.map((t, i) => (
+                                <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 1rem', background: '#334155', marginBottom: '0.25rem', borderRadius: '4px' }}>
+                                    <span>#{i + 1} {t.name}</span>
+                                    <strong>{t.score} pts</strong>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    {roomState.leaderboard?.players?.map((p, i) => (
                         <div key={i} style={{
                             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                             padding: '0.75rem 1rem', background: i === 0 ? '#1d4ed820' : '#1e293b',
                             borderRadius: '6px', marginBottom: '0.5rem',
                             borderLeft: `4px solid ${i === 0 ? '#fbbf24' : i === 1 ? '#94a3b8' : i === 2 ? '#c2775b' : '#334155'}`
                         }}>
-                            <span>{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`} {p.displayName}</span>
+                            <span>{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`} {p.displayName} {p.teamId ? `(Team)` : ''}</span>
                             <span style={{ fontWeight: 'bold', color: '#10b981' }}>{p.score} pts</span>
                         </div>
                     ))}
@@ -190,16 +212,26 @@ export default function HostLobby() {
 
                 <div style={{ maxWidth: '600px', margin: '0 auto' }}>
                     <h3 style={{ color: '#9ca3af', marginBottom: '0.75rem' }}>Live Standings</h3>
-                    {!roomState.leaderboard || roomState.leaderboard.length === 0 ? (
+                    {roomState.settings?.teamMode && roomState.leaderboard?.teams && (
+                        <div style={{ marginBottom: '1rem' }}>
+                            {roomState.leaderboard.teams.map((t, i) => (
+                                <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem', background: '#334155', marginBottom: '0.25rem', borderRadius: '4px' }}>
+                                    <span>{t.name}</span>
+                                    <strong style={{ color: '#fbbf24' }}>{t.score} pts</strong>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    {!roomState.leaderboard || !roomState.leaderboard.players || roomState.leaderboard.players.length === 0 ? (
                         <p style={{ color: '#475569' }}>No scores yet...</p>
                     ) : (
-                        roomState.leaderboard.map((p, i) => (
+                        roomState.leaderboard.players.map((p, i) => (
                             <div key={i} style={{
                                 display: 'flex', justifyContent: 'space-between',
                                 padding: '0.6rem 1rem', background: '#1e293b',
                                 borderRadius: '4px', marginBottom: '0.4rem',
                             }}>
-                                <span>{i + 1}. {p.displayName}</span>
+                                <span>{i + 1}. {p.displayName} {p.teamId ? `(Team)` : ''}</span>
                                 <span style={{ color: '#10b981', fontWeight: 'bold' }}>{p.score} pts</span>
                             </div>
                         ))
@@ -228,10 +260,16 @@ export default function HostLobby() {
                 <p style={{ color: '#9ca3af', marginTop: '0.75rem' }}>
                     Students go to <strong style={{ color: 'white' }}>{joinUrl}</strong> and enter this code
                 </p>
-                <button onClick={() => navigator.clipboard?.writeText(room.code)}
-                    style={{ ...ghostBtn, marginTop: '0.5rem' }}>
-                    📋 Copy Code
-                </button>
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '0.5rem' }}>
+                    <button onClick={() => navigator.clipboard?.writeText(room.code)}
+                        style={{ ...ghostBtn }}>
+                        📋 Copy Code
+                    </button>
+                    <button onClick={() => navigator.clipboard?.writeText(`${window.location.origin}/spectate/${room.code}`)}
+                        style={{ ...ghostBtn }}>
+                        👁️ Copy Spectator Link
+                    </button>
+                </div>
             </div>
 
             <div style={{ background: '#1e293b', borderRadius: '12px', padding: '1.5rem', marginBottom: '2rem' }}>

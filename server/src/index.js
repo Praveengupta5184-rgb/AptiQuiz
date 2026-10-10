@@ -89,6 +89,93 @@ app.get('/api/teacher/dashboard', requireTeacher, async (req, res) => {
     }
 });
 
+app.get('/api/teacher/history', requireTeacher, async (req, res) => {
+    try {
+        const roomsRes = await pool.query(
+            `SELECT r.id as room_id, r.code, r.status, r.created_at, qs.title as test_title, qs.description as test_description,
+                    (SELECT COUNT(*) FROM results res WHERE res.room_id = r.id) as participant_count,
+                    (SELECT MAX(total_score) FROM results res WHERE res.room_id = r.id) as highest_score,
+                    (SELECT AVG(total_score) FROM results res WHERE res.room_id = r.id) as avg_score
+             FROM rooms r
+             JOIN question_sets qs ON r.question_set_id = qs.id
+             WHERE r.teacher_id = $1 AND r.status = 'finished'
+             ORDER BY r.created_at DESC`,
+            [req.teacher.id]
+        );
+        res.json(roomsRes.rows);
+    } catch (e) {
+        console.error('GET /api/teacher/history error:', e.message);
+        res.status(500).json({ error: 'Failed to load test history' });
+    }
+});
+
+app.get('/api/teacher/results/:roomId', requireTeacher, async (req, res) => {
+    try {
+        const roomId = req.params.roomId;
+        // Verify room belongs to teacher
+        const roomCheck = await pool.query(
+            `SELECT r.id, qs.title as test_title, r.created_at, r.code 
+             FROM rooms r JOIN question_sets qs ON r.question_set_id = qs.id
+             WHERE r.id = $1 AND r.teacher_id = $2`,
+            [roomId, req.teacher.id]
+        );
+        if (roomCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Room not found or unauthorized' });
+        }
+        
+        const roomData = roomCheck.rows[0];
+
+        // Fetch leaderboard
+        const lbResult = await pool.query(
+            `SELECT r.id, r.total_score, r.rank, r.accuracy_percent, r.correct, r.attempted, r.avg_response_time_ms,
+                    rp.display_name, r.student_id
+             FROM results r
+             JOIN room_players rp ON r.player_id = rp.id
+             WHERE r.room_id = $1
+             ORDER BY r.rank ASC`,
+            [roomId]
+        );
+        
+        const leaderboard = lbResult.rows;
+        
+        // Stats
+        const totalParticipants = leaderboard.length;
+        const highestScore = totalParticipants > 0 ? leaderboard[0].total_score : 0;
+        const avgScore = totalParticipants > 0 ? leaderboard.reduce((sum, r) => sum + r.total_score, 0) / totalParticipants : 0;
+        const avgAccuracy = totalParticipants > 0 ? leaderboard.reduce((sum, r) => sum + Number(r.accuracy_percent), 0) / totalParticipants : 0;
+        
+        // Question stats
+        const qStats = await pool.query(
+            `SELECT q.text as question_text, q.topic, gq.order_index,
+                    COUNT(a.id) as answers_count,
+                    SUM(CASE WHEN a.is_correct THEN 1 ELSE 0 END)::int as correct_count,
+                    AVG(a.compensated_elapsed_ms) as avg_time
+             FROM game_questions gq
+             JOIN questions q ON gq.question_id = q.id
+             LEFT JOIN answers a ON a.game_question_id = gq.id
+             WHERE gq.room_id = $1
+             GROUP BY q.id, gq.order_index
+             ORDER BY gq.order_index ASC`,
+            [roomId]
+        );
+
+        res.json({
+            room: roomData,
+            stats: {
+                totalParticipants,
+                highestScore,
+                avgScore: Math.round(avgScore),
+                avgAccuracy: Math.round(avgAccuracy)
+            },
+            leaderboard,
+            questionStats: qStats.rows
+        });
+    } catch (e) {
+        console.error('GET /api/teacher/results/:roomId error:', e.message);
+        res.status(500).json({ error: 'Failed to load test results' });
+    }
+});
+
 app.get('/api/tests', requireTeacher, async (req, res) => {
     try {
         const result = await pool.query(
@@ -114,8 +201,10 @@ app.get('/api/tests', requireTeacher, async (req, res) => {
 app.get('/api/student/results', requireStudent, async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT r.id, r.total_score, r.rank, r.accuracy_percent, r.created_at, 
-                    qs.title as test_title, qs.description as test_description
+            `SELECT r.id, r.total_score, r.rank, r.accuracy_percent, r.created_at, r.correct, r.attempted,
+                    qs.title as test_title, qs.description as test_description, rm.code as room_code, rm.id as room_id,
+                    (SELECT COUNT(*) FROM results r2 WHERE r2.room_id = r.room_id) as total_participants,
+                    (SELECT COUNT(*) FROM questions q WHERE q.question_set_id = qs.id) as total_questions
              FROM results r
              JOIN rooms rm ON r.room_id = rm.id
              JOIN question_sets qs ON rm.question_set_id = qs.id
@@ -134,8 +223,8 @@ app.get('/api/student/results/:id', requireStudent, async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT r.id, r.total_score, r.rank, r.accuracy_percent, r.attempted, r.correct,
-                    r.avg_response_time_ms, r.topic_stats, r.created_at,
-                    qs.title as test_title, qs.description as test_description,
+                    r.avg_response_time_ms, r.topic_stats, r.created_at, r.room_id,
+                    qs.title as test_title, qs.description as test_description, rm.code as room_code,
                     (SELECT COUNT(*) FROM questions q WHERE q.question_set_id = qs.id) as total_questions
              FROM results r
              JOIN rooms rm ON r.room_id = rm.id
@@ -146,7 +235,38 @@ app.get('/api/student/results/:id', requireStudent, async (req, res) => {
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Result not found or unauthorized' });
         }
-        res.json(result.rows[0]);
+        
+        const myResult = result.rows[0];
+        
+        // Fetch all results for this room to generate leaderboard and stats
+        const lbResult = await pool.query(
+            `SELECT r.id, r.total_score, r.rank, r.accuracy_percent, r.correct, r.attempted, 
+                    rp.display_name, r.student_id
+             FROM results r
+             JOIN room_players rp ON r.player_id = rp.id
+             WHERE r.room_id = $1
+             ORDER BY r.rank ASC`,
+            [myResult.room_id]
+        );
+        
+        const leaderboard = lbResult.rows;
+        
+        // Calculate room stats
+        const totalParticipants = leaderboard.length;
+        const highestScore = totalParticipants > 0 ? leaderboard[0].total_score : 0;
+        const avgScore = totalParticipants > 0 ? leaderboard.reduce((sum, r) => sum + r.total_score, 0) / totalParticipants : 0;
+        
+        res.json({
+            ...myResult,
+            leaderboard,
+            stats: {
+                totalParticipants,
+                highestScore,
+                avgScore: Math.round(avgScore),
+                diffFromHighest: highestScore - myResult.total_score,
+                diffFromAvg: Math.round(myResult.total_score - avgScore)
+            }
+        });
     } catch (e) {
         console.error('GET /api/student/results/:id error:', e.message);
         res.status(500).json({ error: 'Failed to load detailed result' });
@@ -226,6 +346,34 @@ app.post('/api/tests', requireTeacher, async (req, res) => {
     }
 });
 
+const multer = require('multer');
+const { extractQuestionsFromPdf } = require('./utils/pdfParser');
+
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 } // 10 MB limit
+});
+
+app.post('/api/tests/parse-pdf', requireTeacher, upload.single('pdf'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No PDF file provided.' });
+        }
+        if (req.file.mimetype !== 'application/pdf' && !req.file.originalname.toLowerCase().endsWith('.pdf')) {
+            return res.status(400).json({ error: 'Uploaded file is not a valid PDF.' });
+        }
+
+        const questions = await extractQuestionsFromPdf(req.file.buffer);
+        res.json({ questions });
+    } catch (e) {
+        if (e.message === 'SCANNED_PDF') {
+            return res.status(400).json({ error: 'This appears to be a scanned or image-based PDF. OCR processing is not yet implemented. Please upload a text-based PDF.' });
+        }
+        console.error('PDF parsing error:', e);
+        res.status(500).json({ error: 'Failed to process the PDF file.' });
+    }
+});
+
 app.get('/api/tests/:id', requireTeacher, async (req, res) => {
     try {
         const qsRes = await pool.query(
@@ -268,6 +416,39 @@ app.get('/api/tests/:id/analytics', requireTeacher, async (req, res) => {
     } catch (e) {
         console.error('GET /api/tests/:id/analytics error:', e.message);
         res.status(500).json({ error: 'Failed to fetch analytics' });
+    }
+});
+
+app.get('/api/tests/:id/question-analytics', requireTeacher, async (req, res) => {
+    try {
+        const testId = parseInt(req.params.id, 10);
+        const testRes = await pool.query('SELECT id FROM question_sets WHERE id = $1 AND teacher_id = $2', [testId, req.teacher.id]);
+        if (testRes.rows.length === 0) return res.status(403).json({ error: 'Not authorized' });
+
+        const results = await pool.query(
+            `SELECT 
+                q.id,
+                q.text AS question_text,
+                q.topic,
+                q.difficulty,
+                COUNT(a.id) AS total_answers,
+                SUM(CASE WHEN a.is_correct THEN 1 ELSE 0 END) AS correct_answers,
+                SUM(CASE WHEN NOT a.is_correct AND a.chosen_option_index >= 0 THEN 1 ELSE 0 END) AS incorrect_answers,
+                SUM(CASE WHEN a.chosen_option_index < 0 THEN 1 ELSE 0 END) AS timeouts,
+                ROUND(AVG(a.compensated_elapsed_ms)) AS avg_response_time_ms
+            FROM game_questions gq
+            JOIN questions q ON gq.question_id = q.id
+            JOIN rooms rm ON gq.room_id = rm.id
+            LEFT JOIN answers a ON a.game_question_id = gq.id
+            WHERE rm.question_set_id = $1
+            GROUP BY q.id
+            ORDER BY incorrect_answers DESC`,
+            [testId]
+        );
+        res.json(results.rows);
+    } catch (e) {
+        console.error('GET /api/tests/:id/question-analytics error:', e.message);
+        res.status(500).json({ error: 'Failed to fetch question analytics' });
     }
 });
 
@@ -336,6 +517,134 @@ app.get('/api/rooms/:code/results', requireTeacher, async (req, res) => {
         res.json({ room, results: results.rows });
     } catch (e) {
         res.status(500).json({ error: 'Failed to load results' });
+    }
+});
+
+// ─── Daily Challenges ────────────────────────────────────────────────────────
+
+app.get('/api/daily', async (req, res) => {
+    try {
+        const today = new Date().toISOString().split('T')[0];
+        
+        let res1 = await pool.query(`SELECT id, challenge_date, questions FROM daily_challenges WHERE challenge_date = $1`, [today]);
+        if (res1.rows.length === 0) {
+            const qRes = await pool.query(`SELECT id FROM questions ORDER BY random() LIMIT 5`);
+            if (qRes.rows.length === 0) {
+                return res.status(500).json({ error: 'Not enough questions to generate a daily challenge' });
+            }
+            const qIds = qRes.rows.map(row => row.id);
+            const insertRes = await pool.query(
+                `INSERT INTO daily_challenges (challenge_date, questions) VALUES ($1, $2) RETURNING id, challenge_date, questions`,
+                [today, JSON.stringify(qIds)]
+            );
+            res1 = insertRes;
+        }
+
+        const challenge = res1.rows[0];
+        
+        const qDataRes = await pool.query(
+            `SELECT id, topic, difficulty, text, options, image_url, table_data 
+             FROM questions 
+             WHERE id = ANY($1::int[])`,
+            [challenge.questions]
+        );
+
+        const questionMap = new Map(qDataRes.rows.map(q => [q.id, q]));
+        const orderedQuestions = challenge.questions.map(id => questionMap.get(id)).filter(Boolean);
+        
+        const safeQuestions = orderedQuestions.map(q => ({
+            ...q,
+            options: typeof q.options === 'string' ? JSON.parse(q.options) : q.options
+        }));
+
+        res.json({ id: challenge.id, date: challenge.challenge_date, questions: safeQuestions });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to fetch daily challenge' });
+    }
+});
+
+app.post('/api/daily/submit', async (req, res) => {
+    const { challengeId, playerIdentifier, answers } = req.body;
+    try {
+        if (!challengeId || !playerIdentifier || !answers) {
+            return res.status(400).json({ error: 'Missing fields' });
+        }
+        
+        const challengeRes = await pool.query(`SELECT questions FROM daily_challenges WHERE id = $1`, [challengeId]);
+        if (challengeRes.rows.length === 0) return res.status(404).json({ error: 'Challenge not found' });
+        
+        const qIds = challengeRes.rows[0].questions;
+        const qData = await pool.query(`SELECT id, correct_option_index, explanation FROM questions WHERE id = ANY($1::int[])`, [qIds]);
+        const qMap = new Map(qData.rows.map(q => [q.id, q]));
+        
+        let score = 0;
+        const results = {};
+        for (const [qId, optionIdx] of Object.entries(answers)) {
+            const parsedQid = parseInt(qId);
+            const questionData = qMap.get(parsedQid);
+            if (questionData && questionData.correct_option_index === optionIdx) {
+                score += 100;
+                results[parsedQid] = { correct: true, explanation: questionData.explanation, correctIndex: questionData.correct_option_index };
+            } else if (questionData) {
+                results[parsedQid] = { correct: false, explanation: questionData.explanation, correctIndex: questionData.correct_option_index };
+            }
+        }
+        
+        await pool.query(
+            `INSERT INTO daily_attempts (daily_challenge_id, player_identifier, score) 
+             VALUES ($1, $2, $3)
+             ON CONFLICT (daily_challenge_id, player_identifier) DO UPDATE SET score = EXCLUDED.score, completed_at = CURRENT_TIMESTAMP`,
+            [challengeId, playerIdentifier, score]
+        );
+        
+        res.json({ success: true, score, results });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to submit daily challenge' });
+    }
+});
+
+app.get('/api/daily/leaderboard/:date', async (req, res) => {
+    try {
+        const lbRes = await pool.query(
+            `SELECT d.player_identifier, d.score, d.completed_at 
+             FROM daily_attempts d
+             JOIN daily_challenges c ON c.id = d.daily_challenge_id
+             WHERE c.challenge_date = $1
+             ORDER BY d.score DESC, d.completed_at ASC
+             LIMIT 100`,
+            [req.params.date]
+        );
+        res.json({ leaderboard: lbRes.rows });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to fetch leaderboard' });
+    }
+});
+
+// ─── College Leagues ────────────────────────────────────────────────────────
+
+app.get('/api/colleges', async (req, res) => {
+    try {
+        const result = await pool.query(`SELECT id, name FROM colleges ORDER BY name ASC`);
+        res.json({ colleges: result.rows });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to fetch colleges' });
+    }
+});
+
+app.get('/api/leagues', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT c.name as college_name, ls.score 
+            FROM league_scores ls
+            JOIN colleges c ON c.id = ls.college_id
+            WHERE ls.topic IS NULL
+            ORDER BY ls.score DESC
+        `);
+        res.json({ leagues: result.rows });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to fetch leagues' });
     }
 });
 

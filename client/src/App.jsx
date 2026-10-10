@@ -7,6 +7,7 @@ import StudentLogin from './pages/StudentLogin';
 import StudentDashboard from './pages/StudentDashboard';
 import StudentJoin from './pages/StudentJoin';
 import StudentGame from './pages/StudentGame';
+import SpectatorGame from './pages/SpectatorGame';
 import './App.css';
 
 function App() {
@@ -20,6 +21,7 @@ function App() {
                 <Route path="/student/*" element={<StudentDashboard />} />
                 <Route path="/join" element={<StudentJoin />} />
                 <Route path="/room/:code" element={<StudentGame />} />
+                <Route path="/spectate/:code" element={<SpectatorGame />} />
             </Routes>
         </BrowserRouter>
     );

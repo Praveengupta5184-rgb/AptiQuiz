@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aptiquiz_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aptiquiz_pass}
+      # The default DB is aptiquiz
+      POSTGRES_DB: ${POSTGRES_DB:-aptiquiz}
+    ports:
+      - "${PGPORT:-5433}:5432"
+    volumes:
+      - aptiquiz_pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aptiquiz_user} -d ${POSTGRES_DB:-aptiquiz}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@aptiquiz.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    profiles:
+      - tools
+    depends_on:
+      - postgres
+
+volumes:
+  aptiquiz_pgdata:

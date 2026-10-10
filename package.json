@@ -1,0 +1,25 @@
+{
+  "name": "aptiquiz",
+  "version": "1.0.0",
+  "description": "AptiQuiz: The Placement Pressure Arena",
+  "scripts": {
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d --wait && npm run migrate && npm run seed",
+    "db:reset:clean": "docker compose down -v && docker compose up -d --wait && npm run migrate && cd server && node scripts/seed_clean.js",
+    "db:logs": "docker compose logs -f postgres",
+    "db:psql": "docker compose exec postgres psql -U aptiquiz_user -d aptiquiz",
+    "migrate": "cd server && npm run migrate",
+    "seed": "cd server && npm run seed",
+    "test": "cd server && npm test",
+    "test:load": "cd server && node scripts/loadtest.js",
+    "simulate": "cd server && npm run simulate",
+    "live": "npm run build && cd server && node scripts/live.js",
+    "dev": "concurrently \"cd server && npm run dev\" \"cd client && npm run dev\"",
+    "build": "cd client && npm run build",
+    "install:all": "npm install && cd server && npm install && cd ../client && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

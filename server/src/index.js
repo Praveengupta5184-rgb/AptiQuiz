@@ -164,6 +164,9 @@ app.post('/api/tests', requireTeacher, async (req, res) => {
         if (!Array.isArray(questions) || questions.length === 0) {
             return res.status(400).json({ error: 'At least one question is required' });
         }
+        if (questions.length > 200) {
+            return res.status(400).json({ error: 'Maximum 200 questions allowed per test' });
+        }
 
         // Validate each question
         for (let i = 0; i < questions.length; i++) {

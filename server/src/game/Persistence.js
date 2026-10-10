@@ -45,7 +45,7 @@ async function persistGameResults(room, dbPool) {
 
             // Look up DB player id by session token
             const playerRes = await client.query(
-                'SELECT id FROM room_players WHERE session_token_hash = $1 AND room_id = $2',
+                'SELECT id, student_id FROM room_players WHERE session_token_hash = $1 AND room_id = $2',
                 [tokenHash, room.roomId]
             );
             if (playerRes.rows.length === 0) {
@@ -53,6 +53,7 @@ async function persistGameResults(room, dbPool) {
                 continue; // player was never persisted (e.g. joined after DB insert)
             }
             const playerId = playerRes.rows[0].id;
+            const studentId = playerRes.rows[0].student_id;
 
             const attempted = p.answers.length;
             const correct = p.answers.filter(a => a.isCorrect).length;
@@ -84,10 +85,11 @@ async function persistGameResults(room, dbPool) {
             // Upsert result
             await client.query(
                 `INSERT INTO results
-                   (room_id, player_id, total_score, rank, accuracy_percent, attempted, correct,
+                   (room_id, player_id, student_id, total_score, rank, accuracy_percent, attempted, correct,
                     avg_response_time_ms, fastest_answer_ms, topic_stats)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
                  ON CONFLICT (player_id, room_id) DO UPDATE SET
+                   student_id = EXCLUDED.student_id,
                    total_score = EXCLUDED.total_score,
                    rank = EXCLUDED.rank,
                    accuracy_percent = EXCLUDED.accuracy_percent,
@@ -96,7 +98,7 @@ async function persistGameResults(room, dbPool) {
                    avg_response_time_ms = EXCLUDED.avg_response_time_ms,
                    fastest_answer_ms = EXCLUDED.fastest_answer_ms,
                    topic_stats = EXCLUDED.topic_stats`,
-                [room.roomId, playerId, p.score, rank, accuracy, attempted, correct,
+                [room.roomId, playerId, studentId, p.score, rank, accuracy, attempted, correct,
                     avgResponseTime, fastest, JSON.stringify(topicStats)]
             );
 

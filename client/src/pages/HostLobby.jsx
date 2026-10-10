@@ -125,6 +125,20 @@ export default function HostLobby() {
 
     // ── Finished state ──
     if (roomState.state === 'FINISHED') {
+        const exportToCSV = () => {
+            if (!roomState.leaderboard) return;
+            const headers = ['Rank', 'Name', 'Score'];
+            const rows = roomState.leaderboard.map((p, i) => [i + 1, p.displayName, p.score]);
+            const csvContent = "data:text/csv;charset=utf-8," + [headers, ...rows].map(e => e.join(",")).join("\n");
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", `AptiQuiz_Results_${room.code}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+
         return (
             <div style={{ padding: '2rem', color: 'white', textAlign: 'center' }}>
                 <h2>🎉 Test Complete!</h2>
@@ -142,9 +156,14 @@ export default function HostLobby() {
                         </div>
                     ))}
                 </div>
-                <button onClick={() => navigate('/teacher')} style={btnStyle('#3b82f6')}>
-                    ← Back to Dashboard
-                </button>
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+                    <button onClick={exportToCSV} style={{...btnStyle('#10b981'), display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+                        📊 Download CSV
+                    </button>
+                    <button onClick={() => navigate('/teacher')} style={btnStyle('#3b82f6')}>
+                        ← Back to Dashboard
+                    </button>
+                </div>
             </div>
         );
     }

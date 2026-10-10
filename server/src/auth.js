@@ -129,4 +129,86 @@ router.get('/me', requireTeacher, (req, res) => {
     res.json({ teacher: req.teacher });
 });
 
-module.exports = { router, requireTeacher, getJwtSecret };
+// ─── Student Auth ─────────────────────────────────────────────────────────────
+
+function requireStudent(req, res, next) {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (!token) return res.status(401).json({ error: 'Authentication required' });
+
+    try {
+        const payload = jwt.verify(token, getJwtSecret());
+        if (!payload.studentId) throw new Error('Not a student token');
+        req.student = { id: payload.studentId, email: payload.email, displayName: payload.displayName };
+        next();
+    } catch {
+        res.status(401).json({ error: 'Invalid or expired student token' });
+    }
+}
+
+router.post('/student/register', async (req, res) => {
+    try {
+        const { email, password, displayName } = req.body;
+        if (!email || !password || !displayName) {
+            return res.status(400).json({ error: 'email, password, and displayName are required' });
+        }
+        if (password.length < 8) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters' });
+        }
+
+        const hash = await bcrypt.hash(password, 12);
+        const result = await pool.query(
+            'INSERT INTO students (email, display_name, password_hash) VALUES ($1, $2, $3) RETURNING id, email, display_name',
+            [email.toLowerCase().trim(), displayName.trim(), hash]
+        );
+        const student = result.rows[0];
+
+        const token = jwt.sign(
+            { studentId: student.id, email: student.email, displayName: student.display_name },
+            getJwtSecret(),
+            { expiresIn: '30d' }
+        );
+
+        res.status(201).json({ token, student: { id: student.id, email: student.email, displayName: student.display_name } });
+    } catch (err) {
+        if (err.code === '23505') {
+            return res.status(409).json({ error: 'An account with that email already exists' });
+        }
+        console.error('Student Register error:', err.message);
+        res.status(500).json({ error: 'Registration failed' });
+    }
+});
+
+router.post('/student/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
+
+        const result = await pool.query(
+            'SELECT id, email, display_name, password_hash FROM students WHERE email = $1',
+            [email.toLowerCase().trim()]
+        );
+        const student = result.rows[0];
+        const dummyHash = '$2a$12$invaliddummyhashtopreventtiming..........';
+        const match = student ? await bcrypt.compare(password, student.password_hash) : await bcrypt.compare(password, dummyHash).then(() => false);
+
+        if (!student || !match) return res.status(401).json({ error: 'Invalid email or password' });
+
+        const token = jwt.sign(
+            { studentId: student.id, email: student.email, displayName: student.display_name },
+            getJwtSecret(),
+            { expiresIn: '30d' }
+        );
+
+        res.json({ token, student: { id: student.id, email: student.email, displayName: student.display_name } });
+    } catch (err) {
+        console.error('Student Login error:', err.message);
+        res.status(500).json({ error: 'Login failed' });
+    }
+});
+
+router.get('/student/me', requireStudent, (req, res) => {
+    res.json({ student: req.student });
+});
+
+module.exports = { router, requireTeacher, requireStudent, getJwtSecret };

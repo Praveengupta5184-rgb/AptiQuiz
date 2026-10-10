@@ -31,6 +31,11 @@ export default function Landing() {
                     <button className="option-btn" style={{ background: '#10b981', color: 'white', width: '100%' }}>
                         Join Now
                     </button>
+                    <div style={{ marginTop: '1rem' }}>
+                        <button onClick={(e) => { e.stopPropagation(); navigate('/student/login'); }} style={{ background: 'none', border: 'none', color: '#10b981', cursor: 'pointer', fontSize: '0.85rem', textDecoration: 'underline' }}>
+                            Sign in to view past results
+                        </button>
+                    </div>
                 </div>
             </main>
         </div>

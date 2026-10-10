@@ -58,6 +58,7 @@ export default function StudentGame() {
                 code,
                 displayName: name,
                 sessionTokenHash: token,
+                studentId: parseInt(localStorage.getItem('studentId')) || undefined,
                 role: 'player',
             }, (ack) => {
                 if (!ack?.success) {
@@ -125,7 +126,14 @@ export default function StudentGame() {
 
         // New question
         socket.on('question_active', (q) => {
-            setQuestion(q);
+            // Shuffle options visually while preserving original index
+            const mappedOptions = q.options.map((opt, i) => ({ text: opt, originalIndex: i }));
+            // Fisher-Yates shuffle
+            for (let i = mappedOptions.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [mappedOptions[i], mappedOptions[j]] = [mappedOptions[j], mappedOptions[i]];
+            }
+            setQuestion({ ...q, shuffledOptions: mappedOptions });
             setRevealData(null);
             setSelectedOption(null);
             setStatus('question');
@@ -196,9 +204,11 @@ export default function StudentGame() {
     // Keyboard shortcut: 1-4 to select options
     useEffect(() => {
         const handler = (e) => {
-            const idx = parseInt(e.key) - 1;
-            if (idx >= 0 && question && idx < question.options.length) {
-                submitAnswer(idx);
+            const visualIdx = parseInt(e.key) - 1;
+            const options = question?.shuffledOptions || question?.options;
+            if (options && visualIdx >= 0 && visualIdx < options.length) {
+                const optObj = question?.shuffledOptions ? question.shuffledOptions[visualIdx] : null;
+                submitAnswer(optObj ? optObj.originalIndex : visualIdx);
             }
         };
         window.addEventListener('keydown', handler);
@@ -358,27 +368,28 @@ export default function StudentGame() {
                             <h2 className="question-text">{question.text}</h2>
 
                             <div className="options-grid">
-                                {question.options.map((opt, idx) => {
+                                {(question.shuffledOptions || question.options.map((opt, i) => ({ text: opt, originalIndex: i }))).map((optObj, idx) => {
+                                    const originalIdx = optObj.originalIndex;
                                     let btnClass = 'option-btn';
                                     if (status === 'reveal' && revealData) {
-                                        if (idx === revealData.correctOptionIndex) btnClass += ' correct';
-                                        else if (selectedOption === idx) btnClass += ' wrong';
-                                    } else if (selectedOption === idx) {
+                                        if (originalIdx === revealData.correctOptionIndex) btnClass += ' correct';
+                                        else if (selectedOption === originalIdx) btnClass += ' wrong';
+                                    } else if (selectedOption === originalIdx) {
                                         btnClass += ' selected';
                                     }
 
-                                    const isFaded = answered && selectedOption !== idx && (status !== 'reveal' || idx !== revealData?.correctOptionIndex);
+                                    const isFaded = answered && selectedOption !== originalIdx && (status !== 'reveal' || originalIdx !== revealData?.correctOptionIndex);
 
                                     return (
                                         <button
                                             key={idx}
-                                            onClick={() => submitAnswer(idx)}
+                                            onClick={() => submitAnswer(originalIdx)}
                                             disabled={answered}
                                             className={`${btnClass} ${isFaded ? 'faded' : ''}`}
-                                            aria-label={`Option ${LABELS[idx]}: ${opt}`}
+                                            aria-label={`Option ${LABELS[idx]}: ${optObj.text}`}
                                         >
                                             <div className="option-label">{LABELS[idx]}</div>
-                                            <div className="option-text">{opt}</div>
+                                            <div className="option-text">{optObj.text}</div>
                                         </button>
                                     );
                                 })}

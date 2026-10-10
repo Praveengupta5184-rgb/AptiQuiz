@@ -3,15 +3,16 @@ import { useNavigate } from 'react-router-dom';
 
 export default function StudentJoin() {
     const [code, setCode] = useState('');
-    const [name, setName] = useState('');
+    const [name, setName] = useState(localStorage.getItem('studentName') || '');
     const navigate = useNavigate();
 
     const handleJoin = (e) => {
         e.preventDefault();
         if (code.trim() && name.trim()) {
-            // Save name and token so we can reconnect
             localStorage.setItem('studentName', name.trim());
-            localStorage.setItem('studentToken', `student-${Math.random().toString(36).substr(2, 9)}`);
+            if (!localStorage.getItem('studentToken')) {
+                localStorage.setItem('studentToken', `student-${Math.random().toString(36).substr(2, 9)}`);
+            }
             navigate(`/room/${code.trim().toUpperCase()}`);
         }
     };

@@ -32,27 +32,58 @@ function logout(navigate) {
     navigate('/teacher/login');
 }
 
-// ─── Header ───────────────────────────────────────────────────────────────────
+// ─── Layout ───────────────────────────────────────────────────────────────────
 
-function TeacherHeader({ name }) {
-    const navigate = useNavigate();
+function SidebarLayout({ name, navigate, children }) {
+    const location = window.location.pathname;
+    const navItems = [
+        { path: '/teacher', label: 'Overview', icon: '📊' },
+        { path: '/teacher/tests', label: 'My Tests', icon: '📝' },
+        { path: '/teacher/active', label: 'Active Rooms', icon: '🚀' },
+        { path: '/teacher/completed', label: 'Completed Tests', icon: '✅' },
+    ];
+
     return (
-        <header style={{
-            padding: '1rem 2rem', background: '#1e293b', borderBottom: '1px solid #334155',
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between'
-        }}>
-            <Link to="/teacher" style={{ color: 'white', textDecoration: 'none', fontSize: '1.3rem', fontWeight: 'bold' }}>
-                📝 AptiQuiz Teacher
-            </Link>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                <span style={{ color: '#9ca3af', fontSize: '0.9rem' }}>👤 {name}</span>
-                <button onClick={() => logout(navigate)} style={{
-                    padding: '0.4rem 0.9rem', background: 'transparent',
-                    border: '1px solid #475569', color: '#9ca3af',
-                    borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem'
-                }}>Sign Out</button>
-            </div>
-        </header>
+        <div style={{ display: 'flex', minHeight: '100vh', background: '#0f172a', color: 'white' }}>
+            {/* Sidebar */}
+            <aside style={{ width: '250px', background: '#1e293b', borderRight: '1px solid #334155', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ padding: '1.5rem', borderBottom: '1px solid #334155' }}>
+                    <Link to="/teacher" style={{ color: 'white', textDecoration: 'none', fontSize: '1.3rem', fontWeight: 'bold' }}>
+                        AptiQuiz Teacher
+                    </Link>
+                </div>
+                <nav style={{ flex: 1, padding: '1rem 0' }}>
+                    {navItems.map(item => (
+                        <Link key={item.path} to={item.path} style={{
+                            display: 'block', padding: '1rem 1.5rem', color: location === item.path || (item.path !== '/teacher' && location.startsWith(item.path)) ? '#3b82f6' : '#9ca3af',
+                            textDecoration: 'none', background: location === item.path || (item.path !== '/teacher' && location.startsWith(item.path)) ? '#0f172a' : 'transparent',
+                            borderLeft: `4px solid ${location === item.path || (item.path !== '/teacher' && location.startsWith(item.path)) ? '#3b82f6' : 'transparent'}`,
+                            fontWeight: location === item.path || (item.path !== '/teacher' && location.startsWith(item.path)) ? 'bold' : 'normal',
+                            transition: 'all 0.2s'
+                        }}>
+                            <span style={{ marginRight: '0.75rem' }}>{item.icon}</span> {item.label}
+                        </Link>
+                    ))}
+                </nav>
+            </aside>
+            
+            {/* Main Content */}
+            <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                <header style={{ padding: '1rem 2rem', background: '#1e293b', borderBottom: '1px solid #334155', display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <span style={{ color: '#9ca3af', fontSize: '0.9rem' }}>👤 {name}</span>
+                        <button onClick={() => logout(navigate)} style={{
+                            padding: '0.4rem 0.9rem', background: 'transparent', border: '1px solid #475569', color: '#9ca3af', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem'
+                        }}>Sign Out</button>
+                    </div>
+                </header>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '2rem' }}>
+                    <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+                        {children}
+                    </div>
+                </div>
+            </main>
+        </div>
     );
 }
 
@@ -61,35 +92,32 @@ function TeacherHeader({ name }) {
 function TestList() {
     const navigate = useNavigate();
     useTeacherAuth();
-    const [tests, setTests] = useState([]);
+    const [dashboard, setDashboard] = useState({ tests: [], activeRooms: [], completedRooms: [] });
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
     useEffect(() => {
-        api.getTests()
-            .then(data => { setTests(data); setLoading(false); })
+        api.getTeacherDashboard()
+            .then(data => { setDashboard(data); setLoading(false); })
             .catch(err => { setError(err.message); setLoading(false); });
     }, []);
 
-    if (loading) return <div style={{ padding: '2rem', color: '#9ca3af' }}>Loading your tests...</div>;
+    if (loading) return <div style={{ padding: '2rem', color: '#9ca3af' }}>Loading your dashboard...</div>;
+    if (error) return <div style={{ padding: '2rem', color: '#fca5a5' }}>Error: {error}</div>;
 
-    return (
-        <div style={{ padding: '2rem', maxWidth: '900px', margin: '0 auto' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
-                <h2 style={{ color: 'white', margin: 0 }}>My Tests</h2>
-                <button onClick={() => navigate('/teacher/create')} style={{
-                    padding: '0.75rem 1.5rem', background: '#10b981', color: 'white',
-                    border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold'
-                }}>+ Create New Test</button>
-            </div>
+    const { tests, activeRooms, completedRooms } = dashboard;
 
-            {error && <div style={{ color: '#fca5a5', marginBottom: '1rem' }}>Error: {error}</div>}
+    const location = window.location.pathname;
+    const isOverview = location === '/teacher';
+    const isMyTests = location === '/teacher/tests';
+    const isActive = location === '/teacher/active';
+    const isCompleted = location === '/teacher/completed';
 
+    const renderTests = () => (
+        <div style={{ marginBottom: '2rem' }}>
+            <h3 style={{ color: '#9ca3af', textTransform: 'uppercase', fontSize: '0.9rem', marginBottom: '1rem' }}>My Tests</h3>
             {tests.length === 0 ? (
-                <div style={{
-                    padding: '3rem', background: '#1e293b', borderRadius: '12px',
-                    textAlign: 'center', color: '#9ca3af'
-                }}>
+                <div style={{ padding: '3rem', background: '#1e293b', borderRadius: '12px', textAlign: 'center', color: '#9ca3af' }}>
                     <p>No tests yet.</p>
                     <p style={{ fontSize: '0.9rem' }}>Click "Create New Test" to build your first aptitude test.</p>
                 </div>
@@ -108,15 +136,107 @@ function TestList() {
                                     {test.description ? ` · ${test.description}` : ''}
                                 </p>
                             </div>
-                            <button onClick={() => navigate(`/teacher/test/${test.id}/host`)} style={{
-                                padding: '0.6rem 1.2rem', background: '#3b82f6', color: 'white',
-                                border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold',
-                                whiteSpace: 'nowrap'
-                            }}>🚀 Host Room</button>
+                            <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                <button onClick={() => navigate(`/teacher/test/${test.id}/analytics`)} style={{
+                                    padding: '0.6rem 1.2rem', background: '#4f46e5', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold'
+                                }}>📊 Analytics</button>
+                                <button onClick={() => navigate(`/teacher/test/${test.id}/host`)} style={{
+                                    padding: '0.6rem 1.2rem', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold'
+                                }}>🚀 Host Room</button>
+                            </div>
                         </div>
                     ))}
                 </div>
             )}
+        </div>
+    );
+
+    const renderActive = () => (
+        <div style={{ marginBottom: '2rem' }}>
+            <h3 style={{ color: '#9ca3af', textTransform: 'uppercase', fontSize: '0.9rem', marginBottom: '1rem' }}>Active Rooms</h3>
+            {activeRooms.length === 0 ? (
+                <div style={{ padding: '1.5rem', background: '#1e293b', borderRadius: '8px', color: '#64748b', fontSize: '0.9rem' }}>
+                    No active rooms right now.
+                </div>
+            ) : (
+                <div style={{ display: 'grid', gap: '1rem' }}>
+                    {activeRooms.map(room => (
+                        <div key={room.id} style={{
+                            padding: '1.2rem', background: '#1e293b', borderRadius: '8px',
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                            borderLeft: '4px solid #10b981'
+                        }}>
+                            <div>
+                                <h4 style={{ margin: '0 0 0.25rem', color: 'white' }}>{room.test_title}</h4>
+                                <div style={{ color: '#9ca3af', fontSize: '0.85rem' }}>Code: <strong style={{color: 'white', letterSpacing: '1px'}}>{room.code}</strong> • {room.participant_count} participants</div>
+                            </div>
+                            <button onClick={() => navigate(`/teacher/test/${room.id}/host`)} style={{
+                                padding: '0.5rem 1rem', background: 'transparent', color: '#3b82f6', border: '1px solid #3b82f6', borderRadius: '4px', cursor: 'pointer'
+                            }}>Rejoin Lobby</button>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+
+    const renderCompleted = () => (
+        <div>
+            <h3 style={{ color: '#9ca3af', textTransform: 'uppercase', fontSize: '0.9rem', marginBottom: '1rem' }}>Recent Activity</h3>
+            {completedRooms.length === 0 ? (
+                <div style={{ padding: '1.5rem', background: '#1e293b', borderRadius: '8px', color: '#64748b', fontSize: '0.9rem' }}>
+                    No completed rooms.
+                </div>
+            ) : (
+                <div style={{ display: 'grid', gap: '1rem' }}>
+                    {completedRooms.map(room => (
+                        <div key={room.id} style={{
+                            padding: '1.2rem', background: '#1e293b', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderLeft: '4px solid #4f46e5'
+                        }}>
+                            <div>
+                                <h4 style={{ margin: '0 0 0.25rem', color: 'white' }}>{room.test_title}</h4>
+                                <div style={{ color: '#9ca3af', fontSize: '0.85rem' }}>Completed on {new Date(room.created_at).toLocaleDateString()}</div>
+                            </div>
+                            <div style={{ color: '#10b981', fontWeight: 'bold' }}>{room.participant_count} Students</div>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+
+    return (
+        <div style={{ padding: '0', maxWidth: '1000px', margin: '0 auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+                <h2 style={{ color: 'white', margin: 0 }}>
+                    {isOverview ? 'Overview' : isMyTests ? 'My Tests' : isActive ? 'Active Rooms' : 'Completed Tests'}
+                </h2>
+                <button onClick={() => navigate('/teacher/create')} style={{
+                    padding: '0.75rem 1.5rem', background: '#10b981', color: 'white',
+                    border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold'
+                }}>+ Create New Test</button>
+            </div>
+
+            {isOverview && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
+                    <div style={{ padding: '1.5rem', background: '#1e293b', borderRadius: '8px', borderLeft: '4px solid #3b82f6' }}>
+                        <h3 style={{ margin: '0 0 0.5rem', color: '#9ca3af', fontSize: '0.9rem' }}>TOTAL TESTS</h3>
+                        <div style={{ fontSize: '2rem', fontWeight: 'bold', color: 'white' }}>{tests.length}</div>
+                    </div>
+                    <div style={{ padding: '1.5rem', background: '#1e293b', borderRadius: '8px', borderLeft: '4px solid #10b981' }}>
+                        <h3 style={{ margin: '0 0 0.5rem', color: '#9ca3af', fontSize: '0.9rem' }}>ACTIVE ROOMS</h3>
+                        <div style={{ fontSize: '2rem', fontWeight: 'bold', color: 'white' }}>{activeRooms.length}</div>
+                    </div>
+                    <div style={{ padding: '1.5rem', background: '#1e293b', borderRadius: '8px', borderLeft: '4px solid #4f46e5' }}>
+                        <h3 style={{ margin: '0 0 0.5rem', color: '#9ca3af', fontSize: '0.9rem' }}>COMPLETED</h3>
+                        <div style={{ fontSize: '2rem', fontWeight: 'bold', color: 'white' }}>{completedRooms.length}</div>
+                    </div>
+                </div>
+            )}
+
+            {(isOverview || isActive) && renderActive()}
+            {(isOverview || isCompleted) && renderCompleted()}
+            {(isOverview || isMyTests) && renderTests()}
         </div>
     );
 }
@@ -329,19 +449,139 @@ const ghostBtn = {
     borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem',
 };
 
+// ─── Analytics ────────────────────────────────────────────────────────────────
+
+function TestAnalytics() {
+    const { testId } = useParams();
+    const navigate = useNavigate();
+    useTeacherAuth();
+    const [results, setResults] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        api.getTestAnalytics(testId)
+            .then(data => { setResults(data); setLoading(false); })
+            .catch(err => { setError(err.message); setLoading(false); });
+    }, [testId]);
+
+    if (loading) return <div style={{ padding: '2rem', color: '#9ca3af' }}>Loading analytics...</div>;
+    if (error) return <div style={{ padding: '2rem', color: '#fca5a5' }}>Error: {error}</div>;
+
+    const topicMap = {};
+    results.forEach(r => {
+        const stats = r.topic_stats;
+        for (const topic in stats) {
+            if (!topicMap[topic]) topicMap[topic] = { attempted: 0, correct: 0 };
+            topicMap[topic].attempted += stats[topic].attempted;
+            topicMap[topic].correct += stats[topic].correct;
+        }
+    });
+
+    const exportToCSV = () => {
+        const headers = ['Date', 'Student', 'Score', 'Accuracy (%)'];
+        const rows = results.map(r => [new Date(r.run_date).toLocaleString(), r.display_name, r.total_score, r.accuracy_percent]);
+        const csvContent = "data:text/csv;charset=utf-8," + [headers, ...rows].map(e => e.join(",")).join("\n");
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", `AptiQuiz_Analytics_${testId}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    return (
+        <div style={{ padding: '2rem', maxWidth: '1000px', margin: '0 auto', color: 'white' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '2rem' }}>
+                <button onClick={() => navigate('/teacher')} style={ghostBtn}>← Back</button>
+                <h2 style={{ margin: 0 }}>Test Analytics</h2>
+            </div>
+            
+            <div style={{ display: 'flex', gap: '2rem', marginBottom: '2rem' }}>
+                <div style={{ ...card, flex: 1, textAlign: 'center' }}>
+                    <h3 style={{ color: '#9ca3af', margin: '0 0 0.5rem', fontSize: '0.9rem', textTransform: 'uppercase' }}>Total Attempts</h3>
+                    <div style={{ fontSize: '2.5rem', fontWeight: 'bold' }}>{results.length}</div>
+                </div>
+                <div style={{ ...card, flex: 1, textAlign: 'center' }}>
+                    <h3 style={{ color: '#9ca3af', margin: '0 0 0.5rem', fontSize: '0.9rem', textTransform: 'uppercase' }}>Average Score</h3>
+                    <div style={{ fontSize: '2.5rem', fontWeight: 'bold', color: '#10b981' }}>
+                        {results.length > 0 ? Math.round(results.reduce((s, r) => s + r.total_score, 0) / results.length) : 0}
+                    </div>
+                </div>
+            </div>
+
+            <div style={{ ...card, marginBottom: '2rem' }}>
+                <h3 style={{ marginTop: 0, marginBottom: '1rem' }}>Topic Accuracy (Aggregated)</h3>
+                {Object.keys(topicMap).length === 0 ? <p style={{ color: '#9ca3af' }}>No topic data available yet.</p> : (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '1rem' }}>
+                        {Object.entries(topicMap).map(([topic, data]) => {
+                            const acc = data.attempted > 0 ? Math.round((data.correct / data.attempted) * 100) : 0;
+                            return (
+                                <div key={topic} style={{ background: '#334155', padding: '1rem', borderRadius: '6px' }}>
+                                    <div style={{ fontSize: '0.9rem', color: '#9ca3af', marginBottom: '0.5rem' }}>{topic}</div>
+                                    <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: acc > 70 ? '#10b981' : acc < 40 ? '#ef4444' : '#fbbf24' }}>
+                                        {acc}%
+                                    </div>
+                                    <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '0.25rem' }}>{data.correct} / {data.attempted} correct</div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+
+            <div style={{ ...card }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                    <h3 style={{ margin: 0 }}>All Individual Results</h3>
+                    <button onClick={exportToCSV} disabled={results.length === 0} style={{
+                        padding: '0.5rem 1rem', background: results.length === 0 ? '#475569' : '#10b981', color: 'white', border: 'none', borderRadius: '4px', cursor: results.length === 0 ? 'not-allowed' : 'pointer'
+                    }}>Download CSV</button>
+                </div>
+                {results.length === 0 ? <p style={{ color: '#9ca3af' }}>No students have completed this test yet.</p> : (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                        <thead>
+                            <tr style={{ borderBottom: '1px solid #475569', color: '#9ca3af' }}>
+                                <th style={{ padding: '0.75rem 0' }}>Date</th>
+                                <th style={{ padding: '0.75rem 0' }}>Student</th>
+                                <th style={{ padding: '0.75rem 0' }}>Score</th>
+                                <th style={{ padding: '0.75rem 0' }}>Accuracy</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {results.map((r, i) => (
+                                <tr key={i} style={{ borderBottom: '1px solid #334155' }}>
+                                    <td style={{ padding: '0.75rem 0' }}>{new Date(r.run_date).toLocaleDateString()}</td>
+                                    <td style={{ padding: '0.75rem 0' }}>{r.display_name}</td>
+                                    <td style={{ padding: '0.75rem 0', color: '#10b981', fontWeight: 'bold' }}>{r.total_score}</td>
+                                    <td style={{ padding: '0.75rem 0' }}>{Number(r.accuracy_percent)}%</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
+            </div>
+        </div>
+    );
+}
+
 // ─── Dashboard shell ──────────────────────────────────────────────────────────
 
 export default function TeacherDashboard() {
     const name = localStorage.getItem('teacherName') || 'Teacher';
+    const navigate = useNavigate();
 
     return (
-        <div style={{ minHeight: '100vh', background: '#0f172a' }}>
-            <TeacherHeader name={name} />
+        <SidebarLayout name={name} navigate={navigate}>
             <Routes>
                 <Route path="/" element={<TestList />} />
+                <Route path="/tests" element={<TestList />} />
+                <Route path="/active" element={<TestList />} />
+                <Route path="/completed" element={<TestList />} />
                 <Route path="/create" element={<CreateTest />} />
                 <Route path="/test/:testId/host" element={<HostLobby />} />
+                <Route path="/test/:testId/analytics" element={<TestAnalytics />} />
             </Routes>
-        </div>
+        </SidebarLayout>
     );
 }

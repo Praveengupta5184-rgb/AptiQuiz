@@ -1,0 +1,10 @@
+CREATE TABLE students (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    display_name VARCHAR(100) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE room_players ADD COLUMN student_id INTEGER REFERENCES students(id) ON DELETE SET NULL;
+ALTER TABLE results ADD COLUMN student_id INTEGER REFERENCES students(id) ON DELETE SET NULL;

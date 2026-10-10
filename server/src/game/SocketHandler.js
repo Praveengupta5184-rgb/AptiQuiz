@@ -35,8 +35,9 @@ const { z } = require('zod');
 const joinSchema = z.object({
     code: z.string().length(5).toUpperCase(),
     displayName: z.string().min(1).max(50).trim(),
-    sessionTokenHash: z.string().min(1).max(128),
+    sessionTokenHash: z.string().min(1).max(1024),
     role: z.enum(['player', 'host']).optional(),
+    studentId: z.number().int().positive().optional(),
 });
 
 const submitSchema = z.object({
@@ -103,7 +104,10 @@ class SocketHandler {
                 }
 
                 const parsed = joinSchema.parse(data);
-                const { code, displayName, sessionTokenHash, role } = parsed;
+                let { code, displayName, sessionTokenHash, role } = parsed;
+                if (sessionTokenHash.length > 200) {
+                    sessionTokenHash = require('crypto').createHash('sha256').update(sessionTokenHash).digest('hex');
+                }
 
                 const room = this.rooms.get(code);
                 if (!room) throw new Error('Room not found or has expired');
@@ -150,10 +154,10 @@ class SocketHandler {
                 if (room.roomId) {
                     try {
                         await pool.query(
-                            `INSERT INTO room_players (room_id, session_token_hash, display_name)
-                             VALUES ($1, $2, $3)
+                            `INSERT INTO room_players (room_id, session_token_hash, display_name, student_id)
+                             VALUES ($1, $2, $3, $4)
                              ON CONFLICT (room_id, display_name) DO NOTHING`,
-                            [room.roomId, sessionTokenHash, displayName]
+                            [room.roomId, sessionTokenHash, displayName, parsed.studentId || null]
                         );
                     } catch (dbErr) {
                         if (dbErr.code === '23505') {

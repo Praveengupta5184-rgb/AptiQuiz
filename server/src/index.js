@@ -18,7 +18,7 @@ const { Server } = require('socket.io');
 
 const app = require('./app');
 const { pool } = require('../db');
-const { router: authRouter, requireTeacher } = require('./auth');
+const { router: authRouter, requireTeacher, requireStudent } = require('./auth');
 const SocketHandler = require('./game/SocketHandler');
 const { markInterruptedRooms } = require('./game/Persistence');
 
@@ -54,6 +54,41 @@ app.use('/api/auth', authRouter);
 
 // ─── Test (question set) routes ───────────────────────────────────────────────
 
+app.get('/api/teacher/dashboard', requireTeacher, async (req, res) => {
+    try {
+        const testsRes = await pool.query(
+            `SELECT qs.id, qs.title, qs.description, qs.created_at,
+                    COUNT(q.id)::int AS question_count
+             FROM question_sets qs
+             LEFT JOIN questions q ON q.question_set_id = qs.id
+             WHERE qs.teacher_id = $1
+             GROUP BY qs.id
+             ORDER BY qs.created_at DESC`,
+            [req.teacher.id]
+        );
+
+        const roomsRes = await pool.query(
+            `SELECT r.id, r.code, r.status, r.created_at, qs.title as test_title,
+                    (SELECT COUNT(*) FROM room_players rp WHERE rp.room_id = r.id) as participant_count
+             FROM rooms r
+             JOIN question_sets qs ON r.question_set_id = qs.id
+             WHERE qs.teacher_id = $1
+             ORDER BY r.created_at DESC
+             LIMIT 20`,
+            [req.teacher.id]
+        );
+
+        res.json({
+            tests: testsRes.rows,
+            activeRooms: roomsRes.rows.filter(r => r.status === 'lobby' || r.status === 'active'),
+            completedRooms: roomsRes.rows.filter(r => r.status === 'finished')
+        });
+    } catch (e) {
+        console.error('GET /api/teacher/dashboard error:', e.message);
+        res.status(500).json({ error: 'Failed to load dashboard' });
+    }
+});
+
 app.get('/api/tests', requireTeacher, async (req, res) => {
     try {
         const result = await pool.query(
@@ -70,6 +105,51 @@ app.get('/api/tests', requireTeacher, async (req, res) => {
     } catch (e) {
         console.error('GET /api/tests error:', e.message);
         res.status(500).json({ error: 'Failed to load tests' });
+    }
+});
+
+
+// ─── Student (Account) routes ────────────────────────────────────────────────
+
+app.get('/api/student/results', requireStudent, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT r.id, r.total_score, r.rank, r.accuracy_percent, r.created_at, 
+                    qs.title as test_title, qs.description as test_description
+             FROM results r
+             JOIN rooms rm ON r.room_id = rm.id
+             JOIN question_sets qs ON rm.question_set_id = qs.id
+             WHERE r.student_id = $1
+             ORDER BY r.created_at DESC`,
+            [req.student.id]
+        );
+        res.json(result.rows);
+    } catch (e) {
+        console.error('GET /api/student/results error:', e.message);
+        res.status(500).json({ error: 'Failed to load student results' });
+    }
+});
+
+app.get('/api/student/results/:id', requireStudent, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT r.id, r.total_score, r.rank, r.accuracy_percent, r.attempted, r.correct,
+                    r.avg_response_time_ms, r.topic_stats, r.created_at,
+                    qs.title as test_title, qs.description as test_description,
+                    (SELECT COUNT(*) FROM questions q WHERE q.question_set_id = qs.id) as total_questions
+             FROM results r
+             JOIN rooms rm ON r.room_id = rm.id
+             JOIN question_sets qs ON rm.question_set_id = qs.id
+             WHERE r.id = $1 AND r.student_id = $2`,
+            [req.params.id, req.student.id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Result not found or unauthorized' });
+        }
+        res.json(result.rows[0]);
+    } catch (e) {
+        console.error('GET /api/student/results/:id error:', e.message);
+        res.status(500).json({ error: 'Failed to load detailed result' });
     }
 });
 
@@ -159,6 +239,32 @@ app.get('/api/tests/:id', requireTeacher, async (req, res) => {
         res.json({ ...qsRes.rows[0], questions: qRes.rows });
     } catch (e) {
         res.status(500).json({ error: 'Failed to load test' });
+    }
+});
+
+// Teacher Analytics endpoint
+app.get('/api/tests/:id/analytics', requireTeacher, async (req, res) => {
+    try {
+        const testId = parseInt(req.params.id, 10);
+        // Verify ownership
+        const testRes = await pool.query('SELECT id FROM question_sets WHERE id = $1 AND teacher_id = $2', [testId, req.teacher.id]);
+        if (testRes.rows.length === 0) return res.status(403).json({ error: 'Not authorized' });
+
+        // Get all results for all rooms that ran this test
+        const results = await pool.query(
+            `SELECT r.total_score, r.accuracy_percent, r.attempted, r.correct, r.avg_response_time_ms, r.topic_stats,
+                    p.display_name, rm.created_at as run_date
+             FROM results r
+             JOIN room_players p ON r.player_id = p.id
+             JOIN rooms rm ON r.room_id = rm.id
+             WHERE rm.question_set_id = $1
+             ORDER BY rm.created_at DESC, r.total_score DESC`,
+            [testId]
+        );
+        res.json(results.rows);
+    } catch (e) {
+        console.error('GET /api/tests/:id/analytics error:', e.message);
+        res.status(500).json({ error: 'Failed to fetch analytics' });
     }
 });
 

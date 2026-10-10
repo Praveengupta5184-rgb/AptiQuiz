@@ -48,6 +48,7 @@ function calculateScore(
     const rawElapsedMs = serverReceiptTimeMs - serverStartTimeMs;
     let compensatedElapsedMs = rawElapsedMs - compensation;
     if (compensatedElapsedMs < 0) compensatedElapsedMs = 0;
+    compensatedElapsedMs = Math.round(compensatedElapsedMs);
 
     // 3. Check if answer is too late (beyond deadline + network grace)
     const deadlineMs = timeLimitMs + SCORING_CONFIG.NETWORK_GRACE_MS;

@@ -1,13 +1,23 @@
 import React, { useEffect, useState } from 'react';
 import { Routes, Route, useNavigate, Link } from 'react-router-dom';
 import { api } from '../api';
+import StudentTeamBattles from './StudentTeamBattles';
+import AchievementGallery from './AchievementGallery';
+import BattleHistoryPage from './BattleHistoryPage';
+import StudentCertificates from './StudentCertificates';
+import CertificateView from '../components/CertificateView';
 
 function SidebarLayout({ name, navigate, children }) {
     const location = window.location.pathname;
     const navItems = [
         { path: '/student', label: 'Overview', icon: '🏠' },
         { path: '/student/join', label: 'Join Test', icon: '▶️' },
-        { path: '/student/results', label: 'My Results', icon: '🏆' },
+        { path: '/student/battle', label: 'Team Battles', icon: '⚔️' },
+        { path: '/tournaments', label: 'Tournaments', icon: '🏆' },
+        { path: '/student/certificates', label: 'Certificates', icon: '📜' },
+        { path: '/student/history', label: 'Battle History', icon: '📜' },
+        { path: '/student/achievements', label: 'Achievements', icon: '🏅' },
+        { path: '/student/results', label: 'My Results', icon: '📊' },
         { path: '/student/daily', label: 'Daily Challenge', icon: '📅' },
         { path: '/student/leagues', label: 'College Leagues', icon: '🏛️' }
     ];
@@ -69,6 +79,9 @@ function SidebarLayout({ name, navigate, children }) {
 function StudentViews() {
     const navigate = useNavigate();
     const [results, setResults] = useState([]);
+    const [certificates, setCertificates] = useState([]);
+    const [achievements, setAchievements] = useState([]);
+    const [selectedCert, setSelectedCert] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
@@ -78,9 +91,21 @@ function StudentViews() {
     const isResults = location === '/student/results';
 
     useEffect(() => {
-        api.getStudentResults()
-            .then(data => { setResults(data); setLoading(false); })
-            .catch(err => { setError(err.message); setLoading(false); });
+        Promise.all([
+            api.getStudentResults().catch(() => []),
+            api.getMyCertificates().catch(() => ({ certificates: [] })),
+            api.getMyAchievements().catch(() => ({ achievements: [] }))
+        ])
+        .then(([resData, certData, achData]) => {
+            setResults(Array.isArray(resData) ? resData : []);
+            setCertificates(certData?.certificates || []);
+            setAchievements(achData?.achievements || []);
+            setLoading(false);
+        })
+        .catch(err => {
+            setError(err.message);
+            setLoading(false);
+        });
     }, []);
 
     const [joinCode, setJoinCode] = useState('');
@@ -90,10 +115,6 @@ function StudentViews() {
         e.preventDefault();
         setJoinError(null);
         if (!joinCode.trim()) return;
-        
-        // Since we don't have a specific backend endpoint for validation easily written yet,
-        // we'll rely on the socket room connection to validate it. 
-        // We navigate to /room/:code which handles it.
         navigate(`/room/${joinCode.trim().toUpperCase()}`);
     };
 
@@ -115,14 +136,103 @@ function StudentViews() {
                         <h3 style={{ margin: '0 0 0.5rem', color: '#9ca3af', fontSize: '0.9rem' }}>AVG ACCURACY</h3>
                         <div style={{ fontSize: '2rem', fontWeight: 'bold', color: 'white' }}>{avgAccuracy}%</div>
                     </div>
+                    <div 
+                        onClick={() => navigate('/student/certificates')}
+                        style={{ padding: '1.5rem', background: '#1e293b', borderRadius: '8px', borderLeft: '4px solid #fbbf24', cursor: 'pointer', transition: 'all 0.2s' }}
+                        onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-2px)'}
+                        onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}
+                    >
+                        <h3 style={{ margin: '0 0 0.5rem', color: '#fbbf24', fontSize: '0.9rem' }}>📜 CERTIFICATES</h3>
+                        <div style={{ fontSize: '2rem', fontWeight: 'bold', color: 'white' }}>{certificates.length}</div>
+                        <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>View certificate gallery →</span>
+                    </div>
+                    <div 
+                        onClick={() => navigate('/student/achievements')}
+                        style={{ padding: '1.5rem', background: '#1e293b', borderRadius: '8px', borderLeft: '4px solid #8b5cf6', cursor: 'pointer', transition: 'all 0.2s' }}
+                        onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-2px)'}
+                        onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}
+                    >
+                        <h3 style={{ margin: '0 0 0.5rem', color: '#a78bfa', fontSize: '0.9rem' }}>🏅 BADGES & XP</h3>
+                        <div style={{ fontSize: '2rem', fontWeight: 'bold', color: 'white' }}>{achievements.length}</div>
+                        <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>View achievement awards →</span>
+                    </div>
                 </div>
+
+                {/* Recent Certificates Section */}
+                {certificates.length > 0 && (
+                    <div style={{ marginBottom: '2.5rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                            <h3 style={{ color: 'white', margin: 0, fontSize: '1.25rem' }}>🏆 My Recent Certificates & Honors</h3>
+                            <button onClick={() => navigate('/student/certificates')} style={{ background: 'transparent', border: 'none', color: '#38bdf8', cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold' }}>
+                                View All ({certificates.length}) →
+                            </button>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>
+                            {certificates.slice(0, 3).map(c => (
+                                <div
+                                    key={c.id}
+                                    onClick={() => setSelectedCert(c)}
+                                    style={{
+                                        background: '#1e293b', borderRadius: '10px', padding: '1.25rem',
+                                        border: '1px solid #334155', cursor: 'pointer', transition: 'all 0.2s'
+                                    }}
+                                    onMouseEnter={e => e.currentTarget.style.borderColor = '#fbbf24'}
+                                    onMouseLeave={e => e.currentTarget.style.borderColor = '#334155'}
+                                >
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                                        <span style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: '999px', fontWeight: 'bold', background: '#fbbf2422', color: '#fbbf24' }}>
+                                            {c.category}
+                                        </span>
+                                        <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                                            {new Date(c.issue_date).toLocaleDateString()}
+                                        </span>
+                                    </div>
+                                    <h4 style={{ margin: '0 0 0.3rem', color: 'white', fontSize: '1.05rem' }}>{c.event_name}</h4>
+                                    <p style={{ margin: '0 0 0.75rem', color: '#94a3b8', fontSize: '0.82rem' }}>
+                                        {c.cert_type === 'team' ? `Team: ${c.team_name} (Rank #${c.team_rank})` : `Individual Rank #${c.individual_rank}`}
+                                    </p>
+                                    <span style={{ color: '#38bdf8', fontSize: '0.8rem', fontWeight: 'bold' }}>
+                                        View & Download Certificate 📜 →
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
                 
                 <div style={{ background: '#1e293b', padding: '2rem', borderRadius: '12px', textAlign: 'center' }}>
                     <h3 style={{ color: 'white', marginBottom: '1rem' }}>Ready for a new test?</h3>
-                    <button onClick={() => navigate('/student/join')} style={{
-                        padding: '0.75rem 1.5rem', background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', fontSize: '1.1rem', cursor: 'pointer', fontWeight: 'bold'
-                    }}>Join Room</button>
+                    <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                        <button onClick={() => navigate('/student/join')} style={{
+                            padding: '0.75rem 1.5rem', background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', fontSize: '1.1rem', cursor: 'pointer', fontWeight: 'bold'
+                        }}>Join Solo Test</button>
+                        <button onClick={() => navigate('/student/battle')} style={{
+                            padding: '0.75rem 1.5rem', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '6px', fontSize: '1.1rem', cursor: 'pointer', fontWeight: 'bold'
+                        }}>⚔️ Enter Team Battle</button>
+                    </div>
                 </div>
+
+                {/* Certificate Modal */}
+                {selectedCert && (
+                    <div style={{
+                        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(5px)',
+                        zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem',
+                        overflowY: 'auto'
+                    }}>
+                        <div style={{ position: 'relative', maxWidth: '920px', width: '100%', maxHeight: '95vh', overflowY: 'auto' }}>
+                            <button
+                                onClick={() => setSelectedCert(null)}
+                                style={{
+                                    position: 'absolute', top: '15px', right: '15px', zIndex: 100,
+                                    background: 'rgba(0,0,0,0.6)', border: '1px solid #475569', color: 'white',
+                                    width: '36px', height: '36px', borderRadius: '50%', cursor: 'pointer',
+                                    fontSize: '1.2rem', display: 'flex', alignItems: 'center', justifyContent: 'center'
+                                }}
+                            >✕</button>
+                            <CertificateView certificate={selectedCert} />
+                        </div>
+                    </div>
+                )}
             </div>
         );
     };
@@ -485,6 +595,10 @@ export default function StudentDashboard() {
                 <Route path="/" element={<StudentViews />} />
                 <Route path="/dashboard" element={<StudentViews />} />
                 <Route path="/join" element={<StudentViews />} />
+                <Route path="/battle/*" element={<StudentTeamBattles />} />
+                <Route path="/certificates" element={<StudentCertificates />} />
+                <Route path="/history" element={<BattleHistoryPage />} />
+                <Route path="/achievements" element={<AchievementGallery />} />
                 <Route path="/results" element={<StudentViews />} />
                 <Route path="/results/:id" element={<StudentResultDetails />} />
                 <Route path="/daily" element={<StudentDaily />} />

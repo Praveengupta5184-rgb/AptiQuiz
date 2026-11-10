@@ -70,6 +70,9 @@ class GameRoom {
         this.questionStartMs = 0;
         this.questionDeadlineMs = 0;
         this.timer = null;
+        this.autoAdvanceTimer = null;
+        this.isPaused = false;
+        this.remainingTimeMs = 0;
 
         this.pings = new Map();        // tokenHash → number[]
     }
@@ -142,6 +145,194 @@ class GameRoom {
             this.players.get(token).connected = false;
             this.socketToToken.delete(socketId);
         }
+    }
+
+    // ─── Team Battle Management ────────────────────────────────────────────────
+
+    /**
+     * Create a new team (host only)
+     * @param {string} name - Team name
+     * @param {string} [color] - Hex color code
+     * @returns {object} Created team
+     */
+    createTeam(name, color, customId) {
+        if (this.state !== 'LOBBY') throw new Error('Cannot create teams after battle started');
+        if (!this.teams) this.teams = [];
+        
+        const teamId = customId || (this.teams.length > 0 ? Math.max(...this.teams.map(t => t.id)) + 1 : 1);
+        const team = {
+            id: teamId,
+            name: name.trim(),
+            score: 0,
+            color: color || '#3b82f6',
+        };
+        this.teams.push(team);
+        return team;
+    }
+
+    /**
+     * Player joins a team
+     * @param {string} token - Player session token
+     * @param {number} teamId - Team ID to join
+     * @returns {object} Result with team info
+     */
+    joinTeam(token, teamId) {
+        if (this.state !== 'LOBBY') throw new Error('Cannot join team after battle started');
+        
+        const player = this.players.get(token);
+        if (!player) throw new Error('Player not found');
+        
+        const team = this.teams?.find(t => t.id === teamId);
+        if (!team) throw new Error('Team not found');
+        
+        // Check team capacity
+        const teamSizeLimit = this.settings.teamSizeLimit || 4;
+        const currentMembers = Array.from(this.players.values()).filter(p => p.teamId === teamId).length;
+        if (currentMembers >= teamSizeLimit) {
+            throw new Error('Team is full');
+        }
+        
+        // Leave current team if any
+        if (player.teamId) {
+            player.teamId = null;
+        }
+        
+        player.teamId = teamId;
+        return { teamId: team.id, teamName: team.name };
+    }
+
+    /**
+     * Player leaves their team
+     * @param {string} token - Player session token
+     */
+    leaveTeam(token) {
+        if (this.state !== 'LOBBY') throw new Error('Cannot leave team after battle started');
+        
+        const player = this.players.get(token);
+        if (!player) throw new Error('Player not found');
+        
+        player.teamId = null;
+    }
+
+    /**
+     * Host assigns player to team
+     * @param {number} playerId - Player index in room (or sessionTokenHash)
+     * @param {number|null} teamId - Team ID or null to unassign
+     */
+    assignTeam(playerId, teamId) {
+        if (this.state !== 'LOBBY') throw new Error('Cannot assign teams after battle started');
+        
+        // Find player by ID (could be numeric index or token)
+        let player = null;
+        if (typeof playerId === 'number' && playerId < this.players.size) {
+            // Treat as array index for backwards compatibility
+            const entries = Array.from(this.players.entries());
+            if (entries[playerId]) {
+                player = entries[playerId][1];
+            }
+        } else {
+            // Treat as sessionTokenHash
+            player = this.players.get(playerId);
+        }
+        
+        if (!player) throw new Error('Player not found');
+        
+        if (teamId !== null) {
+            const team = this.teams?.find(t => t.id === teamId);
+            if (!team) throw new Error('Team not found');
+            
+            // Check team capacity
+            const teamSizeLimit = this.settings.teamSizeLimit || 4;
+            const currentMembers = Array.from(this.players.values()).filter(p => p.teamId === teamId).length;
+            if (currentMembers >= teamSizeLimit) {
+                throw new Error('Team is full');
+            }
+            
+            player.teamId = teamId;
+        } else {
+            player.teamId = null;
+        }
+    }
+
+    /**
+     * Set player ready status
+     * @param {string} token - Player session token
+     * @param {boolean} ready - Ready status
+     */
+    setPlayerReady(token, ready) {
+        if (this.state !== 'LOBBY') throw new Error('Cannot change ready status after battle started');
+        
+        const player = this.players.get(token);
+        if (!player) throw new Error('Player not found');
+        
+        player.isReady = ready === true;
+    }
+
+    /**
+     * Validate if battle can start
+     * @returns {object} { valid: boolean, message: string }
+     */
+    validateBattleStart() {
+        const players = Array.from(this.players.values()).filter(p => p.displayName !== 'Host');
+        
+        if (players.length === 0) {
+            return { valid: false, message: 'No players in the battle' };
+        }
+        
+        if (this.settings.teamMode) {
+            const playersWithTeams = players.filter(p => p.teamId);
+            if (playersWithTeams.length === 0) {
+                return { valid: false, message: 'No players assigned to teams' };
+            }
+            
+            // Check that at least one team has players
+            const teamsWithPlayers = new Set(playersWithTeams.map(p => p.teamId));
+            if (teamsWithPlayers.size === 0) {
+                return { valid: false, message: 'No teams have players' };
+            }
+            
+            // Check minimum players per team if configured
+            const minPlayersPerTeam = this.settings.minPlayersPerTeam || 1;
+            for (const teamId of teamsWithPlayers) {
+                const teamSize = playersWithTeams.filter(p => p.teamId === teamId).length;
+                if (teamSize < minPlayersPerTeam) {
+                    return { valid: false, message: `Team has fewer than ${minPlayersPerTeam} player(s)` };
+                }
+            }
+        }
+        
+        return { valid: true };
+    }
+
+    /**
+     * Get team state for lobby updates
+     * @returns {object} { teams, unassignedPlayers }
+     */
+    getTeamState() {
+        const players = Array.from(this.players.values()).map(p => ({
+            id: p.id || null,
+            displayName: p.displayName,
+            teamId: p.teamId,
+            isReady: p.isReady || false,
+            connected: p.connected,
+        }));
+        
+        const unassignedPlayers = players.filter(p => !p.teamId && p.displayName !== 'Host');
+        const assignedPlayers = players.filter(p => p.teamId && p.displayName !== 'Host');
+        
+        const teams = (this.teams || []).map(t => {
+            const members = assignedPlayers.filter(p => p.teamId === t.id);
+            return {
+                id: t.id,
+                name: t.name,
+                color: t.color || '#3b82f6',
+                score: t.score || 0,
+                members,
+                memberCount: members.length,
+            };
+        });
+        
+        return { teams, unassignedPlayers };
     }
 
     // ─── Game control ────────────────────────────────────────────────────────
@@ -225,10 +416,129 @@ class GameRoom {
     }
 
     startTimer(io) {
+        if (this.timer) clearTimeout(this.timer);
         const timeToReveal = this.questionDeadlineMs - Date.now();
         this.timer = setTimeout(() => {
             this.revealAnswer(io);
         }, Math.max(0, timeToReveal));
+    }
+
+    pauseGame(io) {
+        if (this.isPaused) return false;
+        if (this.state !== 'QUESTION_ACTIVE' && this.state !== 'REVEAL') {
+            throw new Error('Can only pause during an active question or reveal');
+        }
+
+        this.isPaused = true;
+
+        if (this.state === 'QUESTION_ACTIVE') {
+            if (this.timer) {
+                clearTimeout(this.timer);
+                this.timer = null;
+            }
+            this.remainingTimeMs = Math.max(0, this.questionDeadlineMs - Date.now());
+        } else if (this.state === 'REVEAL') {
+            if (this.autoAdvanceTimer) {
+                clearTimeout(this.autoAdvanceTimer);
+                this.autoAdvanceTimer = null;
+            }
+        }
+
+        if (io) {
+            io.to(this.code).emit('game_paused', {
+                state: this.state,
+                remainingTimeMs: this.remainingTimeMs,
+                message: 'Test has been paused by the teacher.'
+            });
+        }
+        return true;
+    }
+
+    resumeGame(io) {
+        if (!this.isPaused) return false;
+        this.isPaused = false;
+
+        if (this.state === 'QUESTION_ACTIVE') {
+            const timeLimit = this.remainingTimeMs > 1000 ? this.remainingTimeMs : 3000;
+            this.questionStartMs = Date.now();
+            this.questionDeadlineMs = Date.now() + timeLimit;
+
+            if (io) {
+                const sockets = io?.sockets?.adapter?.rooms?.get(this.code);
+                if (sockets) {
+                    for (const socketId of sockets) {
+                        const token = this.socketToToken.get(socketId);
+                        if (token && this.players.has(token)) {
+                            io.to(socketId).emit('game_resumed', {
+                                deadlineMs: this.questionDeadlineMs,
+                                remainingTimeMs: timeLimit,
+                                questionState: this.getQuestionStateForPlayer(token)
+                            });
+                        } else {
+                            io.to(socketId).emit('game_resumed', {
+                                deadlineMs: this.questionDeadlineMs,
+                                remainingTimeMs: timeLimit,
+                                questionState: this.getQuestionState()
+                            });
+                        }
+                    }
+                } else {
+                    io.to(this.code).emit('game_resumed', {
+                        deadlineMs: this.questionDeadlineMs,
+                        remainingTimeMs: timeLimit,
+                        questionState: this.getQuestionState()
+                    });
+                }
+            }
+
+            this.startTimer(io);
+        } else if (this.state === 'REVEAL') {
+            if (io) {
+                io.to(this.code).emit('game_resumed', {
+                    state: 'REVEAL',
+                    message: 'Resuming test...'
+                });
+            }
+
+            this.autoAdvanceTimer = setTimeout(() => {
+                if (this.state !== 'REVEAL' || this.isPaused) return;
+                const qState = this.nextQuestion();
+                if (qState) {
+                    const sockets = io?.sockets?.adapter?.rooms?.get(this.code);
+                    if (sockets) {
+                        for (const socketId of sockets) {
+                            const token = this.socketToToken.get(socketId);
+                            if (token && this.players.has(token)) {
+                                io.to(socketId).emit('question_active', this.getQuestionStateForPlayer(token));
+                            } else {
+                                io.to(socketId).emit('question_active', qState);
+                            }
+                        }
+                    }
+                    this.startTimer(io);
+                } else {
+                    io?.to(this.code).emit('game_finished', this.getFinalResults());
+                }
+            }, 3000);
+        }
+
+        return true;
+    }
+
+    terminateGame(io, reason = 'Test was cancelled by teacher.') {
+        if (this.timer) clearTimeout(this.timer);
+        if (this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+        this.timer = null;
+        this.autoAdvanceTimer = null;
+        this.state = 'TERMINATED';
+        this.isPaused = false;
+
+        if (io) {
+            io.to(this.code).emit('game_terminated', {
+                reason,
+                message: 'This test has been ended/cancelled by the teacher.'
+            });
+        }
     }
 
     revealAnswer(io) {
@@ -241,18 +551,54 @@ class GameRoom {
         }
 
         const q = this.questions[this.currentQuestionIndex];
-        io.to(this.code).emit('reveal', {
-            correctOptionIndex: q.correct_option_index,
-            explanation: q.explanation || '',
-            leaderboard: this.getLeaderboard(),
-        });
+        const originalOptions = typeof q.options === 'string' ? JSON.parse(q.options) : q.options;
+        const originalCorrectIndex = Number(q.correct_option_index);
+        const correctOptionText = originalOptions[originalCorrectIndex];
+        const leaderboard = this.getLeaderboard();
+
+        if (io) {
+            const sockets = io.sockets?.adapter?.rooms?.get(this.code);
+            if (sockets && sockets.size > 0) {
+                for (const socketId of sockets) {
+                    const token = this.socketToToken.get(socketId);
+                    if (token && this.players.has(token)) {
+                        const shuffled = this._getShuffledOptionsForPlayer(token, this.currentQuestionIndex);
+                        const shuffledCorrectIndex = shuffled.mapping.indexOf(originalCorrectIndex);
+                        io.to(socketId).emit('reveal', {
+                            correctOptionIndex: shuffledCorrectIndex,
+                            originalCorrectOptionIndex: originalCorrectIndex,
+                            correctOptionText,
+                            explanation: q.explanation || '',
+                            leaderboard,
+                        });
+                    } else {
+                        io.to(socketId).emit('reveal', {
+                            correctOptionIndex: originalCorrectIndex,
+                            originalCorrectOptionIndex: originalCorrectIndex,
+                            correctOptionText,
+                            explanation: q.explanation || '',
+                            leaderboard,
+                        });
+                    }
+                }
+            } else {
+                io.to(this.code).emit('reveal', {
+                    correctOptionIndex: originalCorrectIndex,
+                    originalCorrectOptionIndex: originalCorrectIndex,
+                    correctOptionText,
+                    explanation: q.explanation || '',
+                    leaderboard,
+                });
+            }
+        }
 
         // Auto-advance after 5 seconds
-        setTimeout(() => {
-            if (this.state !== 'REVEAL') return;
+        if (this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+        this.autoAdvanceTimer = setTimeout(() => {
+            if (this.state !== 'REVEAL' || this.isPaused) return;
             const qState = this.nextQuestion();
             if (qState) {
-                const sockets = io.sockets.adapter.rooms.get(this.code);
+                const sockets = io?.sockets?.adapter?.rooms?.get(this.code);
                 if (sockets) {
                     for (const socketId of sockets) {
                         const token = this.socketToToken.get(socketId);
@@ -265,7 +611,7 @@ class GameRoom {
                 }
                 this.startTimer(io);
             } else {
-                io.to(this.code).emit('game_finished', this.getFinalResults());
+                io?.to(this.code).emit('game_finished', this.getFinalResults());
             }
         }, 5000);
     }
@@ -305,7 +651,7 @@ class GameRoom {
             
             const incorrectIndices = [];
             for (let i = 0; i < shuffledOptions.mapping.length; i++) {
-                if (shuffledOptions.mapping[i] !== q.correct_option_index) {
+                if (shuffledOptions.mapping[i] !== Number(q.correct_option_index)) {
                     incorrectIndices.push(i);
                 }
             }
@@ -348,7 +694,7 @@ class GameRoom {
         // Map the shuffled option index back to the original option index
         const shuffledOptions = this._getShuffledOptionsForPlayer(token, this.currentQuestionIndex);
         const originalOptionIndex = shuffledOptions.mapping[shuffledOptionIndex];
-        const isCorrect = originalOptionIndex === q.correct_option_index;
+        const isCorrect = originalOptionIndex === Number(q.correct_option_index);
 
         const timeLimitMs = ((q.time_limit || 0) * 1000) ||
             this.settings.timePerQuestion ||
@@ -421,9 +767,15 @@ class GameRoom {
             code: this.code,
             score: player.score,
             streak: player.streak,
+            settings: this.settings || {},
+            teams: this.teams || [],
+            teamState: this.settings?.teamMode ? this.getTeamState() : undefined,
+            roomState: this.getLobbyState(),
             players: Array.from(this.players.values()).map(p => ({
                 displayName: p.displayName,
                 connected: p.connected,
+                teamId: p.teamId,
+                isReady: p.isReady || false,
             })),
         };
 
@@ -438,11 +790,17 @@ class GameRoom {
 
         if (this.state === 'REVEAL') {
             const q = this.questions[this.currentQuestionIndex];
+            const originalOptions = typeof q.options === 'string' ? JSON.parse(q.options) : q.options;
+            const originalCorrectIndex = Number(q.correct_option_index);
+            const shuffled = this._getShuffledOptionsForPlayer(sessionTokenHash, this.currentQuestionIndex);
+            const shuffledCorrectIndex = shuffled.mapping.indexOf(originalCorrectIndex);
             return {
                 ...base,
                 question: this.getQuestionStateForPlayer(sessionTokenHash),
                 reveal: {
-                    correctOptionIndex: q.correct_option_index,
+                    correctOptionIndex: shuffledCorrectIndex,
+                    originalCorrectOptionIndex: originalCorrectIndex,
+                    correctOptionText: originalOptions[originalCorrectIndex],
                     explanation: q.explanation || '',
                     leaderboard: this.getLeaderboard(),
                 },
@@ -480,20 +838,32 @@ class GameRoom {
     // ─── State serializers ────────────────────────────────────────────────────
 
     getLobbyState() {
-        return {
+        const base = {
             code: this.code,
             state: this.state,
             settings: { 
                 maxPlayers: this.settings.maxPlayers || 50,
-                teamMode: !!this.settings.teamMode 
+                teamMode: !!this.settings.teamMode,
+                teamSizeLimit: this.settings.teamSizeLimit,
+                teamCount: this.settings.teamCount,
+                maxTeams: this.settings.maxTeams,
+                minPlayersPerTeam: this.settings.minPlayersPerTeam,
             },
             teams: this.teams || [],
             players: Array.from(this.players.values()).map(p => ({
                 displayName: p.displayName,
                 connected: p.connected,
                 teamId: p.teamId,
+                isReady: p.isReady || false,
             })),
         };
+        
+        // Add team state for battle mode
+        if (this.settings?.teamMode) {
+            base.teamState = this.getTeamState();
+        }
+        
+        return base;
     }
 
     /**
@@ -513,6 +883,7 @@ class GameRoom {
             topic: q.topic,
             difficulty: q.difficulty,
             options: shuffled.options,      // shuffled for this player
+            mapping: shuffled.mapping,      // mapping[shuffledPos] = originalPos
             image_url: q.image_url || null,
             deadlineMs: this.questionDeadlineMs,
             serverNow: Date.now(),
@@ -557,10 +928,23 @@ class GameRoom {
         list.sort((a, b) => b.score - a.score || a.displayName.localeCompare(b.displayName));
         
         let teamLeaderboard = [];
-        if (this.settings.teamMode && this.teams) {
+        if (this.settings?.teamMode && this.teams) {
             teamLeaderboard = this.teams.map(t => {
-                const teamScore = list.filter(p => p.teamId === t.id).reduce((sum, p) => sum + p.score, 0);
-                return { id: t.id, name: t.name, score: teamScore };
+                const teamMembers = list.filter(p => p.teamId === t.id);
+                const teamScore = teamMembers.reduce((sum, p) => sum + p.score, 0);
+                // Calculate contribution percentages
+                const membersWithContribution = teamMembers.map(m => ({
+                    ...m,
+                    contributionPercent: teamScore > 0 ? Math.round((m.score / teamScore) * 100 * 100) / 100 : 0
+                }));
+                return { 
+                    id: t.id, 
+                    name: t.name, 
+                    color: t.color || '#3b82f6',
+                    score: teamScore,
+                    members: membersWithContribution,
+                    memberCount: membersWithContribution.length
+                };
             }).sort((a, b) => b.score - a.score);
         }
 
@@ -569,8 +953,71 @@ class GameRoom {
 
     getFinalResults() {
         const leaderboard = this.getLeaderboard();
+        
+        // Build battle results with team details and individual contributions
+        let battleResults = null;
+        if (this.settings?.teamMode && this.teams) {
+            const players = leaderboard.players;
+            
+            // Team results with member details
+            const teamResults = leaderboard.teams.map((team, rank) => ({
+                rank: rank + 1,
+                id: team.id,
+                name: team.name,
+                color: team.color,
+                totalScore: team.score,
+                memberCount: team.memberCount,
+                members: team.members.map((m, idx) => ({
+                    rank: idx + 1,
+                    displayName: m.displayName,
+                    score: m.score,
+                    contributionPercent: m.contributionPercent,
+                    isMVP: idx === 0 // Top scorer in team is MVP
+                }))
+            }));
+            
+            // Individual results with contribution
+            const individualResults = players.map((p, idx) => ({
+                rank: idx + 1,
+                displayName: p.displayName,
+                score: p.score,
+                teamId: p.teamId,
+                teamName: p.teamId ? this.teams.find(t => t.id === p.teamId)?.name : null,
+                contributionPercent: p.teamId && teamResults.length > 0 
+                    ? (() => {
+                        const team = teamResults.find(t => t.id === p.teamId);
+                        return team && team.totalScore > 0 ? Math.round((p.score / team.totalScore) * 100 * 100) / 100 : 0;
+                    })()
+                    : 0,
+                isMVP: false // Will be set per team
+            }));
+            
+            // Mark MVPs
+            for (const team of teamResults) {
+                if (team.members.length > 0) {
+                    const mvpName = team.members[0].displayName;
+                    const mvp = individualResults.find(p => p.displayName === mvpName);
+                    if (mvp) mvp.isMVP = true;
+                }
+            }
+            
+            // Overall MVP (highest individual score)
+            const overallMVP = individualResults.length > 0 ? individualResults[0] : null;
+            
+            battleResults = {
+                teamResults,
+                individualResults,
+                mvp: overallMVP ? {
+                    displayName: overallMVP.displayName,
+                    score: overallMVP.score,
+                    teamName: overallMVP.teamName
+                } : null
+            };
+        }
+        
         return {
             leaderboard,
+            battleResults,
             totalQuestions: this.questions.length,
         };
     }

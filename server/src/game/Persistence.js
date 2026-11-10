@@ -14,6 +14,7 @@
  */
 
 const { pool: defaultPool } = require('../../db');
+const { checkAndAwardAchievements } = require('../achievements');
 
 /**
  * Persist final results for a finished GameRoom.
@@ -146,6 +147,50 @@ async function persistGameResults(room, dbPool) {
 
         await client.query('COMMIT');
         console.log(`[Room ${room.code}] Results persisted for ${rank - 1} player(s).`);
+
+        // ── Post-commit: Award achievements (non-critical, doesn't roll back main results) ──
+        // Find the MVP (highest scoring player)
+        const mvpEntry = playerEntries.length > 0 ? playerEntries[0] : null;
+        const mvpToken = mvpEntry ? mvpEntry[0] : null;
+        const totalPlayers = playerEntries.length;
+
+        for (const [tokenHash, p] of playerEntries) {
+            if (p.answers.length === 0) continue;
+
+            const isMvp = tokenHash === mvpToken && p.score > 0;
+            const attempted = p.answers.length;
+            const correct = p.answers.filter(a => a.isCorrect).length;
+            const accuracy = attempted > 0 ? (correct / attempted) * 100 : 0;
+            const correctAnswers = p.answers.filter(a => a.isCorrect && a.elapsed >= 0);
+            const fastest = correctAnswers.length > 0 ? Math.min(...correctAnswers.map(a => a.elapsed)) : 999999;
+            const playerRank = playerEntries.findIndex(([t]) => t === tokenHash) + 1;
+
+            // Look up student_id for this player
+            const dbPlayer = await defaultPool.query(
+                'SELECT student_id FROM room_players WHERE session_token_hash = $1 AND room_id = $2',
+                [tokenHash, room.roomId]
+            );
+            const studentId = dbPlayer.rows[0]?.student_id;
+            if (!studentId) continue;
+
+            // Award achievements asynchronously (don't block)
+            checkAndAwardAchievements({
+                studentId,
+                roomId: room.roomId,
+                playerData: p,
+                resultData: {
+                    rank: playerRank,
+                    total_score: p.score,
+                    accuracy,
+                    correct,
+                    attempted,
+                    fastest_ms: fastest,
+                    totalPlayers
+                },
+                isMvp,
+                room
+            }).catch(e => console.error('[Achievements] Error:', e.message));
+        }
     } catch (err) {
         await client.query('ROLLBACK');
         throw err; // re-throw so caller can log

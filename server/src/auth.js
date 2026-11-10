@@ -36,21 +36,43 @@ function getJwtSecret() {
 }
 
 /**
- * Middleware: require a valid teacher JWT.
- * Sets req.teacher = { id, email, displayName }.
+ * Middleware: require a valid teacher/organizer JWT.
+ * Sets req.teacher = { id, email, displayName, role, isSuspended }.
  */
-function requireTeacher(req, res, next) {
+async function requireTeacher(req, res, next) {
     const authHeader = req.headers.authorization || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
     if (!token) return res.status(401).json({ error: 'Authentication required' });
 
     try {
         const payload = jwt.verify(token, getJwtSecret());
-        req.teacher = { id: payload.teacherId, email: payload.email, displayName: payload.displayName };
+        
+        // Fetch current status and role from DB
+        const tRes = await pool.query('SELECT id, email, display_name, role, is_suspended FROM teachers WHERE id = $1', [payload.teacherId]);
+        if (tRes.rows.length === 0) return res.status(401).json({ error: 'Account not found' });
+        
+        const t = tRes.rows[0];
+        if (t.is_suspended) {
+            return res.status(403).json({ error: 'Account has been suspended by platform moderation.' });
+        }
+
+        req.teacher = { id: t.id, email: t.email, displayName: t.display_name, role: t.role || 'organizer', isSuspended: false };
         next();
     } catch {
         res.status(401).json({ error: 'Invalid or expired token' });
     }
+}
+
+/**
+ * Middleware: require platform super admin role.
+ */
+function requireSuperAdmin(req, res, next) {
+    requireTeacher(req, res, () => {
+        if (req.teacher.role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access forbidden: Super Admin privileges required' });
+        }
+        next();
+    });
 }
 
 // POST /api/auth/register
@@ -96,7 +118,7 @@ router.post('/login', async (req, res) => {
         }
 
         const result = await pool.query(
-            'SELECT id, email, display_name, password_hash FROM teachers WHERE email = $1',
+            'SELECT id, email, display_name, password_hash, role, is_suspended FROM teachers WHERE email = $1',
             [email.toLowerCase().trim()]
         );
         const teacher = result.rows[0];
@@ -111,13 +133,17 @@ router.post('/login', async (req, res) => {
             return res.status(401).json({ error: 'Invalid email or password' });
         }
 
+        if (teacher.is_suspended) {
+            return res.status(403).json({ error: 'Account has been suspended' });
+        }
+
         const token = jwt.sign(
-            { teacherId: teacher.id, email: teacher.email, displayName: teacher.display_name },
+            { teacherId: teacher.id, email: teacher.email, displayName: teacher.display_name, role: teacher.role || 'organizer' },
             getJwtSecret(),
             { expiresIn: '8h' }
         );
 
-        res.json({ token, teacher: { id: teacher.id, email: teacher.email, displayName: teacher.display_name } });
+        res.json({ token, teacher: { id: teacher.id, email: teacher.email, displayName: teacher.display_name, role: teacher.role || 'organizer' } });
     } catch (err) {
         console.error('Login error:', err.message);
         res.status(500).json({ error: 'Login failed' });
@@ -211,4 +237,4 @@ router.get('/student/me', requireStudent, (req, res) => {
     res.json({ student: req.student });
 });
 
-module.exports = { router, requireTeacher, requireStudent, getJwtSecret };
+module.exports = { router, requireTeacher, requireSuperAdmin, requireStudent, getJwtSecret };

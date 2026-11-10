@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed.js",
     "seed:clean": "node scripts/seed_clean.js",
@@ -31,6 +32,7 @@
     "node-fetch": "^2.7.0",
     "pdf-parse": "^1.1.1",
     "pg": "^8.23.1",
+    "qrcode": "^1.5.4",
     "socket.io": "^4.8.4",
     "socket.io-client": "^4.8.4",
     "zod": "^4.6.5"

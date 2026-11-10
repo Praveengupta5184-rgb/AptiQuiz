@@ -13,6 +13,7 @@ export default function SpectatorGame() {
     const [question, setQuestion] = useState(null);
     const [revealData, setRevealData] = useState(null);
     const [leaderboard, setLeaderboard] = useState([]);
+    const [teamLeaderboard, setTeamLeaderboard] = useState([]);
     const [finalResults, setFinalResults] = useState(null);
     
     const socketRef = useRef(null);
@@ -44,7 +45,8 @@ export default function SpectatorGame() {
         socket.on('reconnect_state', (data) => {
             setStatus(data.state === 'LOBBY' ? 'lobby' : (data.state === 'FINISHED' ? 'finished' : (data.state === 'REVEAL' ? 'reveal' : 'question')));
             setRoomState(data);
-            setLeaderboard(data.leaderboard || []);
+            setLeaderboard(data.leaderboard?.players || []);
+            setTeamLeaderboard(data.leaderboard?.teams || []);
             if (data.question) setQuestion(data.question);
         });
 
@@ -60,17 +62,21 @@ export default function SpectatorGame() {
         });
         
         socket.on('score_update', (lb) => {
-            setLeaderboard(lb);
+            setLeaderboard(lb?.players || []);
+            setTeamLeaderboard(lb?.teams || []);
         });
         
         socket.on('reveal', (data) => {
             setRevealData(data);
-            setLeaderboard(data.leaderboard);
+            setLeaderboard(data.leaderboard?.players || []);
+            setTeamLeaderboard(data.leaderboard?.teams || []);
             setStatus('reveal');
         });
         
         socket.on('game_finished', (results) => {
             setFinalResults(results);
+            setLeaderboard(results.leaderboard?.players || []);
+            setTeamLeaderboard(results.leaderboard?.teams || []);
             setStatus('finished');
         });
         
@@ -124,7 +130,7 @@ export default function SpectatorGame() {
                                 {question.options.map((opt, i) => {
                                     let bg = '#334155';
                                     if (status === 'reveal') {
-                                        bg = revealData?.correctOptionIndex === i ? '#10b981' : '#334155';
+                                        bg = (revealData?.correctOptionIndex === i || (revealData?.correctOptionText && opt === revealData.correctOptionText)) ? '#10b981' : '#334155';
                                     }
                                     return (
                                         <div key={i} style={{ padding: '1rem', borderRadius: '8px', background: bg, border: '1px solid #475569' }}>
@@ -157,6 +163,19 @@ export default function SpectatorGame() {
                         <h3 style={{ margin: '0 0 1.5rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                             🏆 Live Leaderboard
                         </h3>
+                        {teamLeaderboard.length > 0 && (
+                            <div style={{ marginBottom: '1rem' }}>
+                                <h4 style={{ color: '#fbbf24', margin: '0 0 0.5rem 0', fontSize: '0.9rem' }}>Team Standings</h4>
+                                {teamLeaderboard.map((t, i) => (
+                                    <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem', background: '#0f172a', borderRadius: '6px', marginBottom: '0.25rem' }}>
+                                        <span style={{ color: i === 0 ? '#fbbf24' : i === 1 ? '#9ca3af' : i === 2 ? '#b45309' : 'white' }}>
+                                            {t.name}
+                                        </span>
+                                        <span style={{ color: '#fbbf24', fontWeight: 'bold' }}>{t.score} pts</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                         {leaderboard.length === 0 ? <p style={{ color: '#9ca3af' }}>No players yet...</p> : (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                                 {leaderboard.map((p, i) => (

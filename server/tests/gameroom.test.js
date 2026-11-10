@@ -10,7 +10,11 @@ describe('GameRoom State Machine (legacy)', () => {
     let room;
 
     beforeEach(() => {
-        room = new GameRoom(1, 'TESTCO', { timePerQuestion: 10000, maxPlayers: 2 }, 'host123', mockQuestions, () => {});
+        const questions = [
+            { id: 1, text: 'Q1', options: '["A", "B"]', correct_option_index: 0, difficulty: 'easy', time_limit: 10, topic: 'Math', explanation: '' },
+            { id: 2, text: 'StringIndexQ', options: '["Opt0", "Opt1", "Opt2", "Opt3"]', correct_option_index: "2", difficulty: 'medium', time_limit: 10, topic: 'Logic', explanation: '' }
+        ];
+        room = new GameRoom(1, 'TESTCO', { timePerQuestion: 10000, maxPlayers: 2 }, 'host123', questions, () => {});
     });
 
     it('initializes in LOBBY state', () => {
@@ -72,5 +76,32 @@ describe('GameRoom State Machine (legacy)', () => {
         room.nextQuestion(); // Q2 (index 1)
         room.nextQuestion(); // End
         expect(room.state).toBe('FINISHED');
+    });
+
+    it('safely handles correct_option_index stored as string and allows concurrent submissions', () => {
+        room.addPlayer('socket1', 'token1', 'Player One');
+        room.addPlayer('socket2', 'token2', 'Player Two');
+        room.startGame('host123'); // advances to Q1
+        room.nextQuestion(); // advance to Q2 (StringIndexQ)
+        
+        expect(room.currentQuestionIndex).toBe(1);
+
+        // Player 1 options
+        const p1Opts = room._getShuffledOptionsForPlayer('token1', 1);
+        const correctForP1 = p1Opts.mapping.indexOf(2);
+        
+        // Player 2 options
+        const p2Opts = room._getShuffledOptionsForPlayer('token2', 1);
+        const correctForP2 = p2Opts.mapping.indexOf(2);
+        
+        room.submitAnswer('socket1', correctForP1, null);
+        room.submitAnswer('socket2', correctForP2, null);
+        
+        const p1 = room.players.get('token1');
+        const p2 = room.players.get('token2');
+        
+        // Both answers should be correct even though correct_option_index is a string "2"
+        expect(p1.answers[0].isCorrect).toBe(true);
+        expect(p2.answers[0].isCorrect).toBe(true);
     });
 });

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { SOCKET_URL } from '../api';
+import DynamicLiveLeaderboard from '../components/DynamicLiveLeaderboard';
 
 const LABELS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 
@@ -20,7 +21,11 @@ export default function StudentGame() {
     const [timeLeft, setTimeLeft] = useState(null);
     const [myScore, setMyScore] = useState(0);
     const [leaderboard, setLeaderboard] = useState([]);
+    const [teamLeaderboard, setTeamLeaderboard] = useState([]);
     const [removedOptions, setRemovedOptions] = useState([]);
+    const [isPaused, setIsPaused] = useState(false);
+    const [pausedMessage, setPausedMessage] = useState('');
+    const [terminatedMessage, setTerminatedMessage] = useState('');
 
     const token = localStorage.getItem('studentToken');
     const name = localStorage.getItem('studentName');
@@ -28,7 +33,7 @@ export default function StudentGame() {
     // ── Timer tick ────────────────────────────────────────────────────────────
 
     useEffect(() => {
-        if (!question || status !== 'question') return;
+        if (!question || status !== 'question' || isPaused) return;
         const tick = () => {
             const elapsedSinceReceive = Date.now() - (question.localReceivedAt || Date.now());
             const expectedServerNow = (question.serverNow || Date.now()) + elapsedSinceReceive;
@@ -38,7 +43,7 @@ export default function StudentGame() {
         tick();
         const interval = setInterval(tick, 500);
         return () => clearInterval(interval);
-    }, [question, status]);
+    }, [question, status, isPaused]);
 
     // ── Socket setup ──────────────────────────────────────────────────────────
 
@@ -58,7 +63,7 @@ export default function StudentGame() {
         socket.on('connect', () => {
             setStatus('connecting');
             socket.emit('join_room', {
-                code,
+                code: code?.toUpperCase(),
                 displayName: name,
                 sessionTokenHash: token,
                 studentId: parseInt(localStorage.getItem('studentId')) || undefined,
@@ -67,6 +72,13 @@ export default function StudentGame() {
                 if (!ack?.success) {
                     setStatus('error');
                     setErrorMsg(ack?.error || 'Could not join room');
+                } else if (ack?.lobbyState) {
+                    if (ack.lobbyState.settings?.teamMode) {
+                        navigate(`/student/battle/${code.toUpperCase()}/select-team`);
+                        return;
+                    }
+                    setLobbyPlayers(ack.lobbyState.players || []);
+                    setStatus('lobby');
                 }
             });
         });
@@ -75,7 +87,7 @@ export default function StudentGame() {
             setStatus('reconnecting');
             // Re-emit join; server will detect reconnect via token
             socket.emit('join_room', {
-                code,
+                code: code?.toUpperCase(),
                 displayName: name,
                 sessionTokenHash: token,
                 role: 'player',
@@ -89,6 +101,10 @@ export default function StudentGame() {
 
         // Initial room state (lobby)
         socket.on('room_state', (state) => {
+            if (state.settings?.teamMode) {
+                navigate(`/student/battle/${code.toUpperCase()}/select-team`);
+                return;
+            }
             setLobbyPlayers(state.players || []);
             setStatus('lobby');
         });
@@ -96,6 +112,11 @@ export default function StudentGame() {
         // Reconnect state — restore current game state
         socket.on('reconnect_state', (state) => {
             setMyScore(state.score || 0);
+
+            if (state.settings?.teamMode) {
+                navigate(`/student/battle/${code.toUpperCase()}/select-team`);
+                return;
+            }
 
             if (state.state === 'LOBBY') {
                 setLobbyPlayers(state.players || []);
@@ -130,14 +151,7 @@ export default function StudentGame() {
 
         // New question
         socket.on('question_active', (q) => {
-            // Shuffle options visually while preserving original index
-            const mappedOptions = q.options.map((opt, i) => ({ text: opt, originalIndex: i }));
-            // Fisher-Yates shuffle
-            for (let i = mappedOptions.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [mappedOptions[i], mappedOptions[j]] = [mappedOptions[j], mappedOptions[i]];
-            }
-            setQuestion({ ...q, shuffledOptions: mappedOptions, localReceivedAt: Date.now() });
+            setQuestion({ ...q, localReceivedAt: Date.now() });
             setRevealData(null);
             setSelectedOption(null);
             setRemovedOptions([]);
@@ -147,7 +161,9 @@ export default function StudentGame() {
         // Live leaderboard during question
         socket.on('score_update', (lbData) => {
             const lb = lbData?.players || [];
+            const teams = lbData?.teams || [];
             setLeaderboard(lb);
+            setTeamLeaderboard(teams);
             // Update my score from leaderboard
             const me = lb.find(p => p.displayName === name);
             if (me) setMyScore(me.score);
@@ -157,7 +173,9 @@ export default function StudentGame() {
         socket.on('reveal', (data) => {
             setRevealData(data);
             const lb = data.leaderboard?.players || [];
+            const teams = data.leaderboard?.teams || [];
             setLeaderboard(lb);
+            setTeamLeaderboard(teams);
             setTimeLeft(0);
             setStatus('reveal');
             const me = lb.find(p => p.displayName === name);
@@ -166,9 +184,39 @@ export default function StudentGame() {
 
         // Finished
         socket.on('game_finished', (results) => {
+            setIsPaused(false);
             setFinalResults(results);
-            setLeaderboard(results.leaderboard?.players || []);
+            const lb = results.leaderboard?.players || [];
+            const teams = results.leaderboard?.teams || [];
+            setLeaderboard(lb);
+            setTeamLeaderboard(teams);
             setStatus('finished');
+        });
+
+        // Paused by teacher
+        socket.on('game_paused', (data) => {
+            setIsPaused(true);
+            setPausedMessage(data?.message || 'Test has been paused by the teacher.');
+        });
+
+        // Resumed by teacher
+        socket.on('game_resumed', (data) => {
+            setIsPaused(false);
+            if (data?.deadlineMs && question) {
+                setQuestion(prev => prev ? {
+                    ...prev,
+                    deadlineMs: data.deadlineMs,
+                    localReceivedAt: Date.now(),
+                    serverNow: Date.now()
+                } : null);
+            }
+        });
+
+        // Terminated / Deleted by teacher
+        socket.on('game_terminated', (data) => {
+            setIsPaused(false);
+            setStatus('terminated');
+            setTerminatedMessage(data?.message || data?.reason || 'Test was ended by the teacher.');
         });
 
         // Server errors
@@ -237,10 +285,9 @@ export default function StudentGame() {
     useEffect(() => {
         const handler = (e) => {
             const visualIdx = parseInt(e.key) - 1;
-            const options = question?.shuffledOptions || question?.options;
+            const options = question?.options;
             if (options && visualIdx >= 0 && visualIdx < options.length) {
-                const optObj = question?.shuffledOptions ? question.shuffledOptions[visualIdx] : null;
-                submitAnswer(optObj ? optObj.originalIndex : visualIdx);
+                submitAnswer(visualIdx);
             }
         };
         window.addEventListener('keydown', handler);
@@ -256,6 +303,27 @@ export default function StudentGame() {
                 <p style={{ color: '#9ca3af' }}>
                     {status === 'reconnecting' ? '🔄 Reconnecting...' : 'Connecting...'}
                 </p>
+            </Screen>
+        );
+    }
+
+    if (status === 'terminated') {
+        return (
+            <Screen>
+                <div style={{
+                    padding: '2rem', background: '#1e293b', border: '1px solid #ef4444',
+                    color: 'white', borderRadius: '12px', maxWidth: '450px', textAlign: 'center',
+                    boxShadow: '0 8px 32px rgba(239, 68, 68, 0.2)'
+                }}>
+                    <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🛑</div>
+                    <h2 style={{ color: '#ef4444', margin: '0 0 0.5rem 0' }}>Test Cancelled</h2>
+                    <p style={{ color: '#cbd5e1', fontSize: '1rem', lineHeight: '1.5', margin: '0 0 1.5rem 0' }}>
+                        {terminatedMessage || 'The teacher has cancelled or ended this test.'}
+                    </p>
+                    <button onClick={() => navigate('/join')} style={actionBtn('#3b82f6')}>
+                        ← Back to Join Room
+                    </button>
+                </div>
             </Screen>
         );
     }
@@ -311,6 +379,7 @@ export default function StudentGame() {
 
     if (status === 'finished') {
         const lbPlayers = finalResults?.leaderboard?.players || [];
+        const teamLb = finalResults?.leaderboard?.teams || [];
         const myRank = lbPlayers.findIndex(p => p.displayName === name) + 1;
         return (
             <Screen>
@@ -327,6 +396,24 @@ export default function StudentGame() {
                         </div>
                     )}
                 </div>
+
+                {teamLb.length > 0 && (
+                    <div style={{ maxWidth: '500px', width: '100%', marginBottom: '1.5rem' }}>
+                        <h3 style={{ color: '#fbbf24', marginBottom: '0.75rem', textAlign: 'center' }}>Team Standings</h3>
+                        {teamLb.map((t, i) => (
+                            <div key={t.id} style={{
+                                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                padding: '0.6rem 1rem', borderRadius: '4px', marginBottom: '0.4rem',
+                                background: '#1e293b', border: '1px solid #334155',
+                            }}>
+                                <span>
+                                    {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`} {t.name}
+                                </span>
+                                <span style={{ fontWeight: 'bold', color: '#fbbf24' }}>{t.score}</span>
+                            </div>
+                        ))}
+                    </div>
+                )}
 
                 <div style={{ maxWidth: '500px', width: '100%' }}>
                     <h3 style={{ color: '#9ca3af', marginBottom: '0.75rem', textAlign: 'center' }}>Final Leaderboard</h3>
@@ -381,8 +468,35 @@ export default function StudentGame() {
                     <div className="timer-track">
                         <div className="timer-fill" style={{
                             width: `${timePct}%`,
-                            background: timePct < 25 ? 'var(--danger)' : timePct < 50 ? 'var(--warning)' : 'var(--success)',
+                            background: isPaused ? '#ef4444' : timePct < 25 ? 'var(--danger)' : timePct < 50 ? 'var(--warning)' : 'var(--success)',
                         }} />
+                    </div>
+                )}
+
+                {/* Pause Notification Overlay */}
+                {isPaused && (
+                    <div style={{
+                        position: 'fixed',
+                        top: 0, left: 0, right: 0, bottom: 0,
+                        backgroundColor: 'rgba(15, 23, 42, 0.85)',
+                        backdropFilter: 'blur(8px)',
+                        zIndex: 9999,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        color: 'white',
+                        textAlign: 'center',
+                        padding: '2rem'
+                    }}>
+                        <div style={{ fontSize: '4rem', marginBottom: '1rem', animation: 'pulse 2s infinite' }}>⏸️</div>
+                        <h2 style={{ fontSize: '2rem', margin: '0 0 0.5rem 0', color: '#fbbf24' }}>Test Paused</h2>
+                        <p style={{ color: '#cbd5e1', fontSize: '1.2rem', maxWidth: '500px' }}>
+                            {pausedMessage || 'The teacher has paused the test. Timers are on hold.'}
+                        </p>
+                        <p style={{ color: '#94a3b8', fontSize: '0.9rem', marginTop: '1.5rem' }}>
+                            Please wait for the teacher to resume...
+                        </p>
                     </div>
                 )}
 
@@ -427,30 +541,35 @@ export default function StudentGame() {
                             )}
 
                             <div className="options-grid">
-                                {(question.shuffledOptions || question.options.map((opt, i) => ({ text: opt, originalIndex: i }))).map((optObj, idx) => {
-                                    const originalIdx = optObj.originalIndex;
+                                {(question.options || []).map((opt, idx) => {
                                     let btnClass = 'option-btn';
-                                    const isRemoved = removedOptions.includes(originalIdx);
+                                    const isRemoved = removedOptions.includes(idx);
                                     
+                                    const isCorrectOption = status === 'reveal' && revealData && (
+                                        idx === revealData.correctOptionIndex ||
+                                        (revealData.correctOptionText && opt === revealData.correctOptionText) ||
+                                        (question.mapping && question.mapping[idx] === revealData.originalCorrectOptionIndex)
+                                    );
+
                                     if (status === 'reveal' && revealData) {
-                                        if (originalIdx === revealData.correctOptionIndex) btnClass += ' correct';
-                                        else if (selectedOption === originalIdx) btnClass += ' wrong';
-                                    } else if (selectedOption === originalIdx) {
+                                        if (isCorrectOption) btnClass += ' correct';
+                                        else if (selectedOption === idx) btnClass += ' wrong';
+                                    } else if (selectedOption === idx) {
                                         btnClass += ' selected';
                                     }
 
-                                    const isFaded = isRemoved || (answered && selectedOption !== originalIdx && (status !== 'reveal' || originalIdx !== revealData?.correctOptionIndex));
+                                    const isFaded = isRemoved || (answered && selectedOption !== idx && !isCorrectOption);
 
                                     return (
                                         <button
                                             key={idx}
-                                            onClick={() => submitAnswer(originalIdx)}
+                                            onClick={() => submitAnswer(idx)}
                                             disabled={answered || isRemoved}
                                             className={`${btnClass} ${isFaded ? 'faded' : ''}`}
-                                            aria-label={`Option ${LABELS[idx]}: ${optObj.text}`}
+                                            aria-label={`Option ${LABELS[idx]}: ${opt}`}
                                         >
                                             <div className="option-label">{LABELS[idx]}</div>
-                                            <div className="option-text">{optObj.text}</div>
+                                            <div className="option-text">{opt}</div>
                                         </button>
                                     );
                                 })}
@@ -475,19 +594,16 @@ export default function StudentGame() {
                                     </div>
                                 )}
 
-                                {status === 'reveal' && leaderboard.length > 0 && (
-                                    <div className="mini-lb reveal-anim" style={{ animationDelay: '0.1s' }}>
-                                        <h4>Current Standings</h4>
-                                        <div className="mini-lb-list">
-                                            {leaderboard.slice(0, 5).map((p, i) => (
-                                                <div key={i} className={`mini-lb-row ${p.displayName === name ? 'is-me' : ''}`}>
-                                                    <div className="mini-lb-name">
-                                                        <span className="rank-num">{i + 1}</span> {p.displayName}
-                                                    </div>
-                                                    <div className="mini-lb-score">{p.score}</div>
-                                                </div>
-                                            ))}
-                                        </div>
+                                {status === 'reveal' && (
+                                    <div className="reveal-anim" style={{ marginTop: '1.5rem', width: '100%' }}>
+                                        <h4 style={{ color: '#9ca3af', textAlign: 'center', marginBottom: '0.75rem' }}>Live Standings</h4>
+                                        <DynamicLiveLeaderboard
+                                            teams={teamLeaderboard}
+                                            players={leaderboard}
+                                            currentUserName={name}
+                                            currentUserTeamId={leaderboard.find(p => p.displayName === name)?.teamId}
+                                            isTeamMode={teamLeaderboard && teamLeaderboard.length > 0}
+                                        />
                                     </div>
                                 )}
                             </div>
@@ -498,7 +614,14 @@ export default function StudentGame() {
         );
     }
 
-    return null;
+    return (
+        <Screen>
+            <Spinner />
+            <p style={{ color: '#9ca3af', marginTop: '1rem' }}>
+                Connecting to test lobby...
+            </p>
+        </Screen>
+    );
 }
 
 // ── Helper components ────────────────────────────────────────────────────────

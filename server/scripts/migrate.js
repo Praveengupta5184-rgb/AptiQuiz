@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { pool } = require('../db');
 
-async function migrate() {
+async function runMigrations() {
     console.log('Running migrations...');
     const client = await pool.connect();
     
@@ -42,11 +42,17 @@ async function migrate() {
     } catch (e) {
         await client.query('ROLLBACK');
         console.error('Migration failed:', e);
-        process.exit(1);
+        throw e; // Let the caller decide to exit or not
     } finally {
         client.release();
-        await pool.end();
     }
 }
 
-migrate();
+module.exports = { runMigrations };
+
+// Allow running directly: node scripts/migrate.js
+if (require.main === module) {
+    runMigrations()
+        .then(() => pool.end())
+        .catch(() => process.exit(1));
+}

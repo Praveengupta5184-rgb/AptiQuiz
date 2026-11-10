@@ -325,7 +325,7 @@ describe('Test 15: Per-player shuffle preserves correctness', () => {
 // ─── Test 16: Leaderboard only contains actual participants ───────────────────
 describe('Test 16: Leaderboard contains only actual participants', () => {
     it('empty leaderboard for empty room', () => {
-        expect(makeRoom().getLeaderboard()).toEqual([]);
+        expect(makeRoom().getLeaderboard()).toEqual({ players: [], teams: [] });
     });
 
     it('leaderboard entry count matches joined players', () => {
@@ -333,9 +333,9 @@ describe('Test 16: Leaderboard contains only actual participants', () => {
         room.addPlayer('s1', 't1', 'Alice');
         room.addPlayer('s2', 't2', 'Bob');
         const lb = room.getLeaderboard();
-        expect(lb).toHaveLength(2);
-        expect(lb.map(p => p.displayName)).toContain('Alice');
-        expect(lb.map(p => p.displayName)).toContain('Bob');
+        expect(lb.players).toHaveLength(2);
+        expect(lb.players.map(p => p.displayName)).toContain('Alice');
+        expect(lb.players.map(p => p.displayName)).toContain('Bob');
     });
 
     it('leaderboard sorted descending by score', () => {
@@ -350,9 +350,9 @@ describe('Test 16: Leaderboard contains only actual participants', () => {
         room.submitAnswer('s2', (correct + 1) % 4, null); // Bob: wrong → 0
 
         const lb = room.getLeaderboard();
-        expect(lb[0].displayName).toBe('Alice');
-        expect(lb[0].score).toBeGreaterThan(0);
-        expect(lb[1].score).toBe(0);
+        expect(lb.players[0].displayName).toBe('Alice');
+        expect(lb.players[0].score).toBeGreaterThan(0);
+        expect(lb.players[1].score).toBe(0);
     });
 });
 

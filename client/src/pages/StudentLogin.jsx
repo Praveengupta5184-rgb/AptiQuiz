@@ -2,6 +2,17 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 
+const inputStyle = {
+    padding: '0.875rem', borderRadius: '6px', border: '1px solid #334155',
+    background: '#0f172a', color: 'white', fontSize: '1rem', outline: 'none',
+};
+
+const btnStyle = {
+    padding: '0.875rem', borderRadius: '6px', border: 'none',
+    background: '#3b82f6', color: 'white', fontSize: '1rem', fontWeight: 'bold',
+    cursor: 'pointer', transition: 'background 0.2s'
+};
+
 export default function StudentLogin() {
     const navigate = useNavigate();
     const [isRegister, setIsRegister] = useState(false);
@@ -73,14 +84,3 @@ export default function StudentLogin() {
         </div>
     );
 }
-
-const inputStyle = {
-    padding: '0.875rem', borderRadius: '6px', border: '1px solid #334155',
-    background: '#0f172a', color: 'white', fontSize: '1rem', outline: 'none',
-};
-
-const btnStyle = {
-    padding: '0.875rem', borderRadius: '6px', border: 'none',
-    background: '#3b82f6', color: 'white', fontSize: '1rem', fontWeight: 'bold',
-    cursor: 'pointer', transition: 'background 0.2s'
-};

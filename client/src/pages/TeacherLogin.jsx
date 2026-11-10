@@ -3,6 +3,12 @@ import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../api';
 import '../App.css';
 
+const inputStyle = {
+    width: '100%', padding: '0.75rem', borderRadius: '6px',
+    border: '1px solid #334155', background: '#334155', color: 'white',
+    fontSize: '1rem', boxSizing: 'border-box',
+};
+
 export default function TeacherLogin() {
     const navigate = useNavigate();
     const [mode, setMode] = useState('login'); // 'login' | 'register'
@@ -112,9 +118,3 @@ export default function TeacherLogin() {
         </div>
     );
 }
-
-const inputStyle = {
-    width: '100%', padding: '0.75rem', borderRadius: '6px',
-    border: '1px solid #334155', background: '#334155', color: 'white',
-    fontSize: '1rem', boxSizing: 'border-box',
-};

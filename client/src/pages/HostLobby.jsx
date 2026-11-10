@@ -2,37 +2,101 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { api, SOCKET_URL } from '../api';
+import DynamicLiveLeaderboard from '../components/DynamicLiveLeaderboard';
+import CertificateConfigModal from '../components/CertificateConfigModal';
+
+function btnStyle(bg) {
+    return {
+        display: 'inline-block', marginTop: '1.5rem', padding: '0.75rem 1.5rem',
+        background: bg || '#3b82f6', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer'
+    };
+}
+
+const ghostBtn = {
+    padding: '0.4rem 0.8rem', background: 'transparent',
+    border: '1px solid #475569', color: '#9ca3af',
+    borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem',
+};
 
 export default function HostLobby() {
-    const { testId } = useParams();
+    const { testId, code: urlCode } = useParams();
     const navigate = useNavigate();
 
     const socketRef = useRef(null);
-    const [room, setRoom] = useState(null);       // { code, hostSocketToken }
+    // Guard against React Strict Mode double-invocation (runs effect twice in dev)
+    const roomCreationRef = useRef(false);
+    const [room, setRoom] = useState(null);       // { code, hostSocketToken, roomId }
     const [roomState, setRoomState] = useState(null);
     const [error, setError] = useState(null);
     const [starting, setStarting] = useState(false);
+    const [isPaused, setIsPaused] = useState(false);
+    const [actionLoading, setActionLoading] = useState(false);
+    const [showCertModal, setShowCertModal] = useState(false);
 
-    // Create the room once on mount
+    // Initialize or rejoin room
     useEffect(() => {
         let cancelled = false;
 
-        const searchParams = new URLSearchParams(window.location.search);
-        const teamMode = searchParams.get('teamMode') === 'true';
-        const teamSizeLimit = parseInt(searchParams.get('teamSizeLimit') || '4', 10);
-        const teamCount = parseInt(searchParams.get('teamCount') || '2', 10);
-        const adaptiveDifficulty = searchParams.get('adaptiveDifficulty') === 'true';
-        const collegeId = searchParams.get('collegeId') ? parseInt(searchParams.get('collegeId'), 10) : null;
+        async function initRoom() {
+            try {
+                let roomData = null;
 
-        api.createRoom({ 
-            questionSetId: testId,
-            collegeId: collegeId,
-            settings: { maxPlayers: 50, advanceEarly: true, teamMode, teamSizeLimit, teamCount, adaptiveDifficulty } 
-        })
-            .then(data => {
+                if (urlCode) {
+                    // Rejoining existing room (e.g. on page refresh or from active rooms list)
+                    const upperCode = urlCode.toUpperCase();
+                    const cachedToken = sessionStorage.getItem(`hostToken_${upperCode}`);
+                    const cachedRoomId = sessionStorage.getItem(`roomId_${upperCode}`);
+                    if (cachedToken && cachedRoomId && cachedRoomId !== 'undefined' && !isNaN(parseInt(cachedRoomId))) {
+                        roomData = { code: upperCode, hostSocketToken: cachedToken, roomId: parseInt(cachedRoomId) };
+                    } else {
+                        const info = await api.getHostRoomInfo(upperCode);
+                        if (!info.success) throw new Error(info.error || 'Failed to load room');
+                        if (info.status === 'finished') {
+                            navigate(`/teacher/results/${info.roomId}`, { replace: true });
+                            return;
+                        }
+                        roomData = { code: info.code, hostSocketToken: info.hostSocketToken, roomId: info.roomId };
+                        sessionStorage.setItem(`hostToken_${info.code}`, info.hostSocketToken);
+                        if (info.roomId) sessionStorage.setItem(`roomId_${info.code}`, info.roomId);
+                    }
+                } else if (testId) {
+                    // ── GUARD: prevent React Strict Mode from creating two rooms ──
+                    // useRef survives Strict Mode's simulated unmount/remount cycle.
+                    if (roomCreationRef.current) return;
+                    roomCreationRef.current = true;
+
+                    // Creating room from test setup
+                    const searchParams = new URLSearchParams(window.location.search);
+                    const teamMode = searchParams.get('teamMode') === 'true';
+                    const isPublic = searchParams.get('isPublic') === 'true';
+                    const battleName = searchParams.get('battleName') || '';
+                    const teamSizeLimit = parseInt(searchParams.get('teamSizeLimit') || '4', 10);
+                    const studentCreatedTeams = searchParams.get('studentCreatedTeams') !== 'false';
+                    const teamCount = studentCreatedTeams ? 0 : parseInt(searchParams.get('teamCount') || '0', 10);
+                    const adaptiveDifficulty = searchParams.get('adaptiveDifficulty') === 'true';
+                    const collegeId = searchParams.get('collegeId') ? parseInt(searchParams.get('collegeId'), 10) : null;
+
+                    const data = await api.createRoom({ 
+                        questionSetId: testId,
+                        collegeId: collegeId,
+                        isPublic,
+                        battleName,
+                        settings: { maxPlayers: 50, advanceEarly: true, teamMode, teamSizeLimit, teamCount, studentCreatedTeams, adaptiveDifficulty, isPublic, battleName } 
+                    });
+
+                    if (!data.success) throw new Error(data.error || 'Failed to create room');
+                    roomData = data;
+                    sessionStorage.setItem(`hostToken_${data.code}`, data.hostSocketToken);
+                    if (data.roomId) sessionStorage.setItem(`roomId_${data.code}`, data.roomId);
+
+                    // Update URL to /teacher/room/:code so refreshing reconnects instead of creating a new room!
+                    navigate(`/teacher/room/${data.code}`, { replace: true });
+                } else {
+                    throw new Error('No test or room specified');
+                }
+
                 if (cancelled) return;
-                if (!data.success) throw new Error(data.error || 'Failed to create room');
-                setRoom(data);
+                setRoom(roomData);
 
                 // Connect to socket as host
                 const socket = io(SOCKET_URL, {
@@ -44,9 +108,9 @@ export default function HostLobby() {
 
                 socket.on('connect', () => {
                     socket.emit('join_room', {
-                        code: data.code,
+                        code: roomData.code,
                         displayName: 'Host',
-                        sessionTokenHash: data.hostSocketToken,
+                        sessionTokenHash: roomData.hostSocketToken,
                         role: 'host',
                     }, (ack) => {
                         if (!ack?.success) setError(ack?.error || 'Failed to join room as host');
@@ -55,6 +119,10 @@ export default function HostLobby() {
 
                 socket.on('room_state', (state) => {
                     if (!cancelled) setRoomState(state);
+                });
+
+                socket.on('team_updated', (teamState) => {
+                    if (!cancelled) setRoomState(prev => prev ? { ...prev, ...teamState } : null);
                 });
 
                 socket.on('question_active', () => {
@@ -74,11 +142,22 @@ export default function HostLobby() {
                 });
 
                 socket.on('game_finished', (results) => {
-                    if (!cancelled) setRoomState(prev => ({
-                        ...prev,
-                        state: 'FINISHED',
-                        leaderboard: results.leaderboard,
-                    }));
+                    if (!cancelled) {
+                        setIsPaused(false);
+                        setRoomState(prev => ({
+                            ...prev,
+                            state: 'FINISHED',
+                            leaderboard: results.leaderboard,
+                        }));
+                    }
+                });
+
+                socket.on('game_paused', (data) => {
+                    if (!cancelled) setIsPaused(true);
+                });
+
+                socket.on('game_resumed', (data) => {
+                    if (!cancelled) setIsPaused(false);
                 });
 
                 socket.on('connect_error', (err) => {
@@ -88,16 +167,18 @@ export default function HostLobby() {
                 socket.on('error', (err) => {
                     if (!cancelled) setError(err.message);
                 });
-            })
-            .catch(err => {
+            } catch (err) {
                 if (!cancelled) setError(err.message);
-            });
+            }
+        }
+
+        initRoom();
 
         return () => {
             cancelled = true;
             if (socketRef.current) socketRef.current.disconnect();
         };
-    }, [testId]);
+    }, [testId, urlCode, navigate]);
 
     const startGame = () => {
         if (!socketRef.current || starting) return;
@@ -105,6 +186,40 @@ export default function HostLobby() {
         socketRef.current.emit('start_game', {}, (ack) => {
             setStarting(false);
             if (!ack?.success) setError(ack?.error || 'Failed to start game');
+        });
+    };
+
+    const togglePause = () => {
+        if (!socketRef.current || actionLoading) return;
+        setActionLoading(true);
+        const eventName = isPaused ? 'resume_game' : 'pause_game';
+        socketRef.current.emit(eventName, {}, (ack) => {
+            setActionLoading(false);
+            if (ack?.success) {
+                setIsPaused(!isPaused);
+            } else {
+                alert(ack?.error || `Failed to ${isPaused ? 'resume' : 'pause'} test`);
+            }
+        });
+    };
+
+    const terminateTest = (fromLobby = false) => {
+        const confirmMsg = fromLobby 
+            ? 'Are you sure you want to cancel and delete this room? Students will be disconnected.' 
+            : 'Are you sure you want to STOP and CANCEL this active test? This will immediately end the test for all students.';
+        if (!window.confirm(confirmMsg)) return;
+
+        if (!socketRef.current || actionLoading) return;
+        setActionLoading(true);
+
+        socketRef.current.emit('terminate_room', { reason: 'Teacher cancelled the test.' }, (ack) => {
+            setActionLoading(false);
+            if (ack?.success) {
+                sessionStorage.removeItem(`hostToken_${room?.code}`);
+                navigate('/teacher');
+            } else {
+                alert(ack?.error || 'Failed to cancel test');
+            }
         });
     };
 
@@ -128,8 +243,11 @@ export default function HostLobby() {
     // ── Loading state ──
     if (!room || !roomState) {
         return (
-            <div style={{ padding: '2rem', color: 'white', textAlign: 'center' }}>
-                <p>Creating room...</p>
+            <div style={{ minHeight: '60vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'white', textAlign: 'center' }}>
+                <div style={{ fontSize: '2.5rem', marginBottom: '1rem', animation: 'bounce 1s infinite' }}>🚀</div>
+                <p style={{ fontSize: '1.1rem', color: '#94a3b8' }}>
+                    {urlCode ? `Loading room ${urlCode}...` : 'Preparing test room...'}
+                </p>
             </div>
         );
     }
@@ -166,7 +284,7 @@ export default function HostLobby() {
                             ))}
                         </div>
                     )}
-                    {roomState.leaderboard?.players?.map((p, i) => (
+                    {(Array.isArray(roomState.leaderboard) ? roomState.leaderboard : (roomState.leaderboard?.players || [])).map((p, i) => (
                         <div key={i} style={{
                             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                             padding: '0.75rem 1rem', background: i === 0 ? '#1d4ed820' : '#1e293b',
@@ -178,14 +296,26 @@ export default function HostLobby() {
                         </div>
                     ))}
                 </div>
-                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
                     <button onClick={exportToCSV} style={{...btnStyle('#10b981'), display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
                         📊 Download CSV
+                    </button>
+                    <button onClick={() => setShowCertModal(true)} style={{...btnStyle('#fbbf24'), color: '#0f172a', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+                        📜 Configure & Issue Certificates
                     </button>
                     <button onClick={() => navigate('/teacher')} style={btnStyle('#3b82f6')}>
                         ← Back to Dashboard
                     </button>
                 </div>
+
+                {showCertModal && (
+                    <CertificateConfigModal
+                        roomId={room.roomId}
+                        roomCode={room.code}
+                        eventName={`Battle Room ${room.code}`}
+                        onClose={() => setShowCertModal(false)}
+                    />
+                )}
             </div>
         );
     }
@@ -194,48 +324,81 @@ export default function HostLobby() {
     if (roomState.state === 'QUESTION_ACTIVE' || roomState.state === 'REVEAL') {
         return (
             <div style={{ padding: '2rem', color: 'white' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
-                    <h2 style={{ margin: 0 }}>
-                        🔴 LIVE — Room {room.code}
-                        <span style={{
-                            marginLeft: '1rem', fontSize: '0.9rem', padding: '0.25rem 0.6rem',
-                            background: roomState.state === 'QUESTION_ACTIVE' ? '#10b981' : '#f59e0b',
-                            borderRadius: '1rem', fontWeight: 'normal'
-                        }}>
-                            {roomState.state === 'QUESTION_ACTIVE' ? 'Answering' : 'Revealing'}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
+                    <div>
+                        <h2 style={{ margin: '0 0 0.5rem 0' }}>
+                            🔴 LIVE — Room {room.code}
+                            <span style={{
+                                marginLeft: '1rem', fontSize: '0.9rem', padding: '0.25rem 0.6rem',
+                                background: isPaused ? '#ef4444' : roomState.state === 'QUESTION_ACTIVE' ? '#10b981' : '#f59e0b',
+                                borderRadius: '1rem', fontWeight: 'bold'
+                            }}>
+                                {isPaused ? '⏸️ PAUSED' : roomState.state === 'QUESTION_ACTIVE' ? 'Answering' : 'Revealing'}
+                            </span>
+                        </h2>
+                        <span style={{ color: '#9ca3af', fontSize: '0.9rem' }}>
+                            {roomState.players?.filter(p => p.connected).length || 0} connected
                         </span>
-                    </h2>
-                    <span style={{ color: '#9ca3af', fontSize: '0.9rem' }}>
-                        {roomState.players?.filter(p => p.connected).length || 0} connected
-                    </span>
+                    </div>
+
+                    {/* Teacher Live Controls: Pause/Resume and Cancel Test */}
+                    <div style={{ display: 'flex', gap: '0.75rem' }}>
+                        <button
+                            onClick={togglePause}
+                            disabled={actionLoading}
+                            style={{
+                                padding: '0.6rem 1.2rem',
+                                background: isPaused ? '#10b981' : '#f59e0b',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                fontWeight: 'bold',
+                                cursor: actionLoading ? 'not-allowed' : 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.4rem'
+                            }}
+                        >
+                            {isPaused ? '▶️ Resume Test' : '⏸️ Pause Test'}
+                        </button>
+                        <button
+                            onClick={() => terminateTest(false)}
+                            disabled={actionLoading}
+                            style={{
+                                padding: '0.6rem 1.2rem',
+                                background: '#ef4444',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                fontWeight: 'bold',
+                                cursor: actionLoading ? 'not-allowed' : 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.4rem'
+                            }}
+                        >
+                            🛑 Delete / Cancel Test
+                        </button>
+                    </div>
                 </div>
 
-                <div style={{ maxWidth: '600px', margin: '0 auto' }}>
-                    <h3 style={{ color: '#9ca3af', marginBottom: '0.75rem' }}>Live Standings</h3>
-                    {roomState.settings?.teamMode && roomState.leaderboard?.teams && (
-                        <div style={{ marginBottom: '1rem' }}>
-                            {roomState.leaderboard.teams.map((t, i) => (
-                                <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem', background: '#334155', marginBottom: '0.25rem', borderRadius: '4px' }}>
-                                    <span>{t.name}</span>
-                                    <strong style={{ color: '#fbbf24' }}>{t.score} pts</strong>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                    {!roomState.leaderboard || !roomState.leaderboard.players || roomState.leaderboard.players.length === 0 ? (
-                        <p style={{ color: '#475569' }}>No scores yet...</p>
-                    ) : (
-                        roomState.leaderboard.players.map((p, i) => (
-                            <div key={i} style={{
-                                display: 'flex', justifyContent: 'space-between',
-                                padding: '0.6rem 1rem', background: '#1e293b',
-                                borderRadius: '4px', marginBottom: '0.4rem',
-                            }}>
-                                <span>{i + 1}. {p.displayName} {p.teamId ? `(Team)` : ''}</span>
-                                <span style={{ color: '#10b981', fontWeight: 'bold' }}>{p.score} pts</span>
-                            </div>
-                        ))
-                    )}
+                {isPaused && (
+                    <div style={{
+                        padding: '1rem', background: '#ef444420', border: '1px solid #ef4444',
+                        color: '#fca5a5', borderRadius: '8px', maxWidth: '600px', margin: '0 auto 1.5rem auto',
+                        textAlign: 'center'
+                    }}>
+                        ⏸️ <strong>Test is currently paused.</strong> Student timers are frozen. Click "Resume Test" when ready.
+                    </div>
+                )}
+
+                <div style={{ maxWidth: '650px', margin: '0 auto' }}>
+                    <h3 style={{ color: '#9ca3af', marginBottom: '0.75rem', textAlign: 'center' }}>Live Standings</h3>
+                    <DynamicLiveLeaderboard
+                        teams={roomState.leaderboard?.teams || []}
+                        players={Array.isArray(roomState.leaderboard) ? roomState.leaderboard : (roomState.leaderboard?.players || [])}
+                        isTeamMode={!!roomState.settings?.teamMode}
+                    />
                 </div>
             </div>
         );
@@ -272,9 +435,59 @@ export default function HostLobby() {
                 </div>
             </div>
 
+            {roomState.settings?.teamMode && (
+                <div style={{ background: '#1e293b', borderRadius: '12px', padding: '1.5rem', marginBottom: '2rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                        <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <span>⚔️ Teams Formation</span>
+                            {roomState.settings?.isPublic && (
+                                <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.6rem', background: '#3b82f6', borderRadius: '999px', color: 'white' }}>
+                                    🌐 Public Battle
+                                </span>
+                            )}
+                        </h3>
+                        <span style={{ color: '#9ca3af', fontSize: '0.9rem' }}>
+                            {roomState.teams?.length || 0} teams • Max {roomState.settings?.teamSizeLimit || 4} / team
+                        </span>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1rem' }}>
+                        {roomState.teams?.map((team) => {
+                            const members = roomState.players?.filter(p => p.teamId === team.id && p.displayName !== 'Host') || [];
+                            return (
+                                <div key={team.id} style={{
+                                    background: '#0f172a', padding: '1rem', borderRadius: '8px',
+                                    border: `2px solid ${team.color || '#3b82f6'}`
+                                }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                                        <strong style={{ color: team.color || '#3b82f6' }}>{team.name}</strong>
+                                        <span style={{ fontSize: '0.8rem', color: '#9ca3af' }}>
+                                            {members.length}/{roomState.settings?.teamSizeLimit || 4}
+                                        </span>
+                                    </div>
+                                    {members.length === 0 ? (
+                                        <div style={{ color: '#475569', fontSize: '0.8rem', fontStyle: 'italic' }}>No members yet</div>
+                                    ) : (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                                            {members.map((m, idx) => (
+                                                <div key={idx} style={{ fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.3rem', color: '#e2e8f0' }}>
+                                                    <span>{m.connected ? '🟢' : '🔴'}</span>
+                                                    <span>{m.displayName}</span>
+                                                    {m.isReady && <span style={{ color: '#10b981', fontSize: '0.75rem' }}>✓</span>}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
             <div style={{ background: '#1e293b', borderRadius: '12px', padding: '1.5rem', marginBottom: '2rem' }}>
                 <h3 style={{ margin: '0 0 1rem', display: 'flex', justifyContent: 'space-between' }}>
-                    <span>Students Joined</span>
+                    <span>{roomState.settings?.teamMode ? 'All Joined Students' : 'Students Joined'}</span>
                     <span style={{ color: '#9ca3af', fontWeight: 'normal' }}>{playerCount} / 50</span>
                 </h3>
 
@@ -302,7 +515,7 @@ export default function HostLobby() {
                 )}
             </div>
 
-            <div style={{ textAlign: 'center' }}>
+            <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
                 <button
                     onClick={startGame}
                     disabled={playerCount === 0 || starting}
@@ -315,23 +528,31 @@ export default function HostLobby() {
                 >
                     {starting ? 'Starting...' : playerCount === 0 ? 'Waiting for students...' : `🚀 Start Test (${playerCount} student${playerCount !== 1 ? 's' : ''})`}
                 </button>
-                <p style={{ color: '#475569', fontSize: '0.8rem', marginTop: '0.5rem' }}>
-                    Only you (the host) can start the test.
+
+                <button
+                    onClick={() => terminateTest(true)}
+                    disabled={actionLoading}
+                    style={{
+                        padding: '0.6rem 1.5rem',
+                        fontSize: '0.95rem',
+                        background: 'transparent',
+                        color: '#ef4444',
+                        border: '1px solid #ef4444',
+                        borderRadius: '6px',
+                        cursor: actionLoading ? 'not-allowed' : 'pointer',
+                        fontWeight: 'bold',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.4rem'
+                    }}
+                >
+                    🗑️ Cancel / Delete This Room
+                </button>
+
+                <p style={{ color: '#475569', fontSize: '0.8rem', margin: 0 }}>
+                    Only you (the host) can start or cancel the test.
                 </p>
             </div>
         </div>
     );
 }
-
-function btnStyle(bg) {
-    return {
-        display: 'inline-block', marginTop: '1.5rem', padding: '0.75rem 1.5rem',
-        background: bg, color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer'
-    };
-}
-
-const ghostBtn = {
-    padding: '0.4rem 0.8rem', background: 'transparent',
-    border: '1px solid #475569', color: '#9ca3af',
-    borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem',
-};
